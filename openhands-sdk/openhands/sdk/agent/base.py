@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -740,6 +740,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ACP server manages its own context window.
         """
         return True
+
+    @property
+    def conversation_contract(self) -> Literal["openhands", "acp"]:
+        """Agent-server conversation contract this agent requires."""
+        return "openhands"
 
     def ask_agent(self, question: str) -> str | None:  # noqa: ARG002
         """Optional override for stateless question answering.

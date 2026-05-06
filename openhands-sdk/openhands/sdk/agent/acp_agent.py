@@ -24,7 +24,7 @@ import time
 import uuid
 from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from acp.client.connection import ClientSideConnection
 from acp.exceptions import RequestError as ACPRequestError
@@ -44,10 +44,6 @@ from acp.transports import default_environment
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.settings.acp_providers import (
-    build_session_model_meta,
-    detect_acp_provider_by_agent_name,
-)
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ACPToolCallEvent,
@@ -61,6 +57,10 @@ from openhands.sdk.llm import LLM, Message, MessageToolCall, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import maybe_init_laminar, observe
 from openhands.sdk.secret import SecretSource
+from openhands.sdk.settings.acp_providers import (
+    build_session_model_meta,
+    detect_acp_provider_by_agent_name,
+)
 from openhands.sdk.tool import Tool  # noqa: TC002
 from openhands.sdk.tool.builtins.finish import FinishAction, FinishObservation
 
@@ -189,12 +189,14 @@ def _select_auth_method(
 def _resolve_bypass_mode(agent_name: str) -> str:
     """Return the session mode ID that bypasses all permission prompts.
 
-    Looks up the provider via :func:`~openhands.sdk.settings.acp_providers.detect_acp_provider_by_agent_name`
-    and returns its :attr:`~openhands.sdk.settings.acp_providers.ACPProviderInfo.default_session_mode`.
+    Looks up the provider from the ACP provider registry and returns its
+    default session mode.
     Falls back to :data:`_DEFAULT_BYPASS_MODE` for unknown servers.
     """
     provider = detect_acp_provider_by_agent_name(agent_name)
-    return provider.default_session_mode if provider is not None else _DEFAULT_BYPASS_MODE
+    if provider is not None:
+        return provider.default_session_mode
+    return _DEFAULT_BYPASS_MODE
 
 
 def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
@@ -796,6 +798,11 @@ class ACPAgent(AgentBase):
     def supports_condenser(self) -> bool:
         """``False`` — the ACP server manages its own context window."""
         return False
+
+    @property
+    def conversation_contract(self) -> Literal["acp"]:
+        """ACP agents require the ACP-capable agent-server contract."""
+        return "acp"
 
     # -- ACP-specific runtime properties -----------------------------------
 

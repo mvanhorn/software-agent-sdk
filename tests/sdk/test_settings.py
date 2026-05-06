@@ -12,6 +12,7 @@ from openhands.sdk import (
     LLM,
     ACPAgentSettings,
     Agent,
+    AgentContext,
     AgentSettings,
     AgentSettingsBase,
     ConversationSettings,
@@ -544,6 +545,62 @@ def test_acp_api_key_env_var_maps_known_servers() -> None:
     )
 
 
+def test_acp_resolve_provider_env_from_llm_credentials() -> None:
+    settings = ACPAgentSettings(
+        acp_server="gemini-cli",
+        llm=LLM(
+            model="gemini-2.5-pro",
+            api_key=SecretStr("sk-test-gemini"),
+            base_url="https://gemini-proxy.example.com",
+        ),
+    )
+
+    assert settings.resolve_provider_env() == {
+        "GEMINI_API_KEY": "sk-test-gemini",
+        "GEMINI_BASE_URL": "https://gemini-proxy.example.com",
+    }
+
+
+def test_acp_resolve_provider_env_custom_server_empty() -> None:
+    settings = ACPAgentSettings(
+        acp_server="custom",
+        acp_command=["custom-acp"],
+        llm=LLM(
+            model="custom-model",
+            api_key=SecretStr("sk-test"),
+            base_url="https://proxy.example.com",
+        ),
+    )
+
+    assert settings.resolve_provider_env() == {}
+
+
+def test_acp_resolve_acp_env_explicit_entries_override_provider_env() -> None:
+    settings = ACPAgentSettings(
+        acp_server="claude-code",
+        llm=LLM(model="claude-opus-4-6", api_key=SecretStr("sk-ui-key")),
+        acp_env={"ANTHROPIC_API_KEY": "sk-explicit-override"},
+    )
+
+    assert settings.resolve_acp_env() == {
+        "ANTHROPIC_API_KEY": "sk-explicit-override"
+    }
+
+
+def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
+    context = AgentContext(secrets={"GITHUB_TOKEN": "ghp_test"})
+    settings = ACPAgentSettings(
+        acp_server="codex",
+        llm=LLM(model="gpt-5.4", api_key=SecretStr("sk-openai")),
+        agent_context=context,
+    )
+
+    agent = settings.create_agent()
+
+    assert agent.acp_env == {"OPENAI_API_KEY": "sk-openai"}
+    assert agent.agent_context == context
+
+
 # ---------------------------------------------------------------------------
 # Legacy ``AgentSettings`` compatibility
 # ---------------------------------------------------------------------------
@@ -775,6 +832,7 @@ def test_regular_agent_supports_all_capabilities() -> None:
     assert agent.supports_openhands_tools is True
     assert agent.supports_openhands_mcp is True
     assert agent.supports_condenser is True
+    assert agent.conversation_contract == "openhands"
 
 
 def test_acp_agent_reports_no_openhands_capabilities() -> None:
@@ -784,3 +842,4 @@ def test_acp_agent_reports_no_openhands_capabilities() -> None:
     assert agent.supports_openhands_tools is False
     assert agent.supports_openhands_mcp is False
     assert agent.supports_condenser is False
+    assert agent.conversation_contract == "acp"

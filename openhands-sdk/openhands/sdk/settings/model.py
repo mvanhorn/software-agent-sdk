@@ -974,6 +974,13 @@ class ACPAgentSettings(AgentSettingsBase):
             ).model_dump()
         },
     )
+    agent_context: AgentContext | None = Field(
+        default=None,
+        description=(
+            "Prompt-only context for the ACP server. Secrets are injected into "
+            "the subprocess environment by ACPAgent."
+        ),
+    )
 
     @property
     def provider_info(self) -> ACPProviderInfo | None:
@@ -1000,6 +1007,49 @@ class ACPAgentSettings(AgentSettingsBase):
         """
         info = self.provider_info
         return info.base_url_env_var if info is not None else None
+
+    def resolve_provider_env(self) -> dict[str, str]:
+        """Derive provider-native env vars from the attribution LLM settings.
+
+        Built-in ACP providers read credentials and optional base URLs from
+        provider-specific env var names. This helper translates the generic
+        :attr:`llm` settings into that provider-native subprocess environment.
+        Custom servers return an empty mapping.
+        """
+        env: dict[str, str] = {}
+
+        api_key = self.llm.api_key
+        if api_key is not None and self.api_key_env_var:
+            key_value = (
+                api_key.get_secret_value()
+                if isinstance(api_key, SecretStr)
+                else str(api_key)
+            )
+            key_value = key_value.strip()
+            if key_value:
+                env[self.api_key_env_var] = key_value
+
+        base_url = self.llm.base_url
+        if base_url is not None and self.base_url_env_var:
+            base_url_value = str(base_url).strip()
+            if base_url_value:
+                env[self.base_url_env_var] = base_url_value
+
+        return env
+
+    def resolve_acp_env(self) -> dict[str, str]:
+        """Return the effective ACP subprocess environment.
+
+        Explicit :attr:`acp_env` entries override provider-derived env vars.
+        ``ACPAgent`` then injects :attr:`agent_context` secrets only for keys
+        that are still absent, preserving the overall priority:
+
+        ``acp_env > provider env > agent_context.secrets``.
+        """
+        return {
+            **self.resolve_provider_env(),
+            **dict(self.acp_env),
+        }
 
     def resolve_acp_command(self) -> list[str]:
         """Return the effective subprocess command for this settings block.
@@ -1036,10 +1086,11 @@ class ACPAgentSettings(AgentSettingsBase):
             llm=self.llm,
             acp_command=self.resolve_acp_command(),
             acp_args=list(self.acp_args),
-            acp_env=dict(self.acp_env),
+            acp_env=self.resolve_acp_env(),
             acp_model=self.acp_model,
             acp_session_mode=self.acp_session_mode,
             acp_prompt_timeout=self.acp_prompt_timeout,
+            agent_context=self.agent_context,
         )
 
 

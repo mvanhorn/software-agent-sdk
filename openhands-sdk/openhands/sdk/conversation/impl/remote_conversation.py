@@ -63,7 +63,7 @@ ACP_CONVERSATIONS_PATH = "/api/acp/conversations"
 
 
 def _uses_acp_conversation_contract(agent: AgentBase) -> bool:
-    return getattr(agent, "kind", agent.__class__.__name__) == "ACPAgent"
+    return agent.conversation_contract == "acp"
 
 
 def _conversation_contract_mismatch_message(conversation_id: ConversationID) -> str:
