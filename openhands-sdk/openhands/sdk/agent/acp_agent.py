@@ -142,12 +142,6 @@ def _make_dummy_llm() -> LLM:
 # ---------------------------------------------------------------------------
 
 
-# Fallback session mode used when no registered provider matches the
-# runtime agent name.  ``full-access`` is the most permissive neutral
-# default (codex-acp uses it; other servers that don't recognise it will
-# silently ignore the request).
-_DEFAULT_BYPASS_MODE = "full-access"
-
 # ACP auth method ID → environment variable that supplies the credential.
 # When the server reports auth_methods, we pick the first method whose
 # required credential source is present.
@@ -186,17 +180,17 @@ def _select_auth_method(
     return None
 
 
-def _resolve_bypass_mode(agent_name: str) -> str:
+def _resolve_bypass_mode(agent_name: str) -> str | None:
     """Return the session mode ID that bypasses all permission prompts.
 
     Looks up the provider from the ACP provider registry and returns its
-    default session mode.
-    Falls back to :data:`_DEFAULT_BYPASS_MODE` for unknown servers.
+    ``default_session_mode``.  Returns ``None`` for unknown/custom servers —
+    callers should skip ``set_session_mode`` in that case.
     """
     provider = detect_acp_provider_by_agent_name(agent_name)
     if provider is not None:
         return provider.default_session_mode
-    return _DEFAULT_BYPASS_MODE
+    return None
 
 
 def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
@@ -1065,15 +1059,14 @@ class ACPAgent(AgentBase):
                 self.acp_model,
             )
 
-            # Resolve the permission mode to use.  Different ACP servers
-            # use different mode IDs for the same concept (no-prompts):
-            #   - claude-agent-acp → "bypassPermissions"
-            #   - codex-acp        → "full-access"
-            mode_id = self.acp_session_mode
-            if mode_id is None:
-                mode_id = _resolve_bypass_mode(agent_name)
-            logger.info("Setting ACP session mode: %s", mode_id)
-            await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
+            # Resolve the permission mode.  Known providers each have their
+            # own mode ID (bypassPermissions, full-access, yolo …).
+            # Unknown/custom servers get None — skip the call rather than
+            # sending a provider-specific string they won't recognise.
+            mode_id = self.acp_session_mode or _resolve_bypass_mode(agent_name)
+            if mode_id is not None:
+                logger.info("Setting ACP session mode: %s", mode_id)
+                await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
 
             return conn, process, filtered_reader, session_id, agent_name, agent_version
 

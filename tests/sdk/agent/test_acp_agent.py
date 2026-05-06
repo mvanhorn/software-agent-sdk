@@ -2410,11 +2410,11 @@ class TestResolveBypassMode:
     def test_codex_acp_with_version(self):
         assert _resolve_bypass_mode("Codex-ACP v0.9.2") == "full-access"
 
-    def test_unknown_server_defaults_to_full_access(self):
-        assert _resolve_bypass_mode("some-other-agent") == "full-access"
+    def test_unknown_server_returns_none(self):
+        assert _resolve_bypass_mode("some-other-agent") is None
 
-    def test_empty_name_defaults_to_full_access(self):
-        assert _resolve_bypass_mode("") == "full-access"
+    def test_empty_name_returns_none(self):
+        assert _resolve_bypass_mode("") is None
 
 
 # ---------------------------------------------------------------------------
