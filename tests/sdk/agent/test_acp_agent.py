@@ -18,7 +18,6 @@ from openhands.sdk.agent.acp_agent import (
     _extract_token_usage,
     _maybe_set_session_model,
     _OpenHandsACPBridge,
-    _resolve_bypass_mode,
     _select_auth_method,
     _serialize_tool_content,
 )
@@ -2390,34 +2389,6 @@ class TestClientForkTextRouting:
 
 
 # ---------------------------------------------------------------------------
-# _resolve_bypass_mode
-# ---------------------------------------------------------------------------
-
-
-class TestResolveBypassMode:
-    def test_claude_agent(self):
-        assert _resolve_bypass_mode("claude-agent-acp") == "bypassPermissions"
-
-    def test_claude_agent_with_scope(self):
-        assert (
-            _resolve_bypass_mode("@agentclientprotocol/claude-agent-acp")
-            == "bypassPermissions"
-        )
-
-    def test_codex_acp(self):
-        assert _resolve_bypass_mode("codex-acp") == "full-access"
-
-    def test_codex_acp_with_version(self):
-        assert _resolve_bypass_mode("Codex-ACP v0.9.2") == "full-access"
-
-    def test_unknown_server_returns_none(self):
-        assert _resolve_bypass_mode("some-other-agent") is None
-
-    def test_empty_name_returns_none(self):
-        assert _resolve_bypass_mode("") is None
-
-
-# ---------------------------------------------------------------------------
 # acp_session_mode field
 # ---------------------------------------------------------------------------
 
@@ -2830,14 +2801,6 @@ class TestACPPromptRetry:
 # ---------------------------------------------------------------------------
 # Gemini-specific tests
 # ---------------------------------------------------------------------------
-
-
-class TestGeminiBypassMode:
-    def test_gemini_cli_uses_yolo(self):
-        assert _resolve_bypass_mode("gemini-cli") == "yolo"
-
-    def test_gemini_cli_with_version(self):
-        assert _resolve_bypass_mode("gemini-cli/0.35.3") == "yolo"
 
 
 class TestGeminiSessionModel:

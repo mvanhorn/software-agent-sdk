@@ -180,18 +180,6 @@ def _select_auth_method(
     return None
 
 
-def _resolve_bypass_mode(agent_name: str) -> str | None:
-    """Return the session mode ID that bypasses all permission prompts.
-
-    Looks up the provider from the ACP provider registry and returns its
-    ``default_session_mode``.  Returns ``None`` for unknown/custom servers —
-    callers should skip ``set_session_mode`` in that case.
-    """
-    provider = detect_acp_provider_by_agent_name(agent_name)
-    if provider is not None:
-        return provider.default_session_mode
-    return None
-
 
 def _build_session_meta(agent_name: str, acp_model: str | None) -> dict[str, Any]:
     """Build ACP session metadata for server-specific model selection."""
@@ -1063,7 +1051,10 @@ class ACPAgent(AgentBase):
             # own mode ID (bypassPermissions, full-access, yolo …).
             # Unknown/custom servers get None — skip the call rather than
             # sending a provider-specific string they won't recognise.
-            mode_id = self.acp_session_mode or _resolve_bypass_mode(agent_name)
+            provider = detect_acp_provider_by_agent_name(agent_name)
+            mode_id = self.acp_session_mode or (
+                provider.default_session_mode if provider else None
+            )
             if mode_id is not None:
                 logger.info("Setting ACP session mode: %s", mode_id)
                 await conn.set_session_mode(mode_id=mode_id, session_id=session_id)
