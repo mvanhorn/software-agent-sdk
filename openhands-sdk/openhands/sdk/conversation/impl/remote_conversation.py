@@ -15,10 +15,11 @@ import websockets
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+from openhands.sdk.tool.schema import Observation
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.tool.schema import Action, Observation
+    from openhands.sdk.tool.schema import Action
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
@@ -61,6 +62,12 @@ logger = get_logger(__name__)
 
 LEGACY_CONVERSATIONS_PATH = "/api/conversations"
 ACP_CONVERSATIONS_PATH = "/api/acp/conversations"
+
+
+class _RemoteObservation(Observation):
+    """Concrete Observation subclass for client-side deserialization."""
+
+    pass
 
 
 def _agent_kind_mismatch_message(conversation_id: ConversationID) -> str:
@@ -1411,6 +1418,16 @@ class RemoteConversation(BaseConversation):
         agent's terminal tool so environment changes persist in the agent's
         session.
 
+        Note: This is intended for **pre-run** setup only. Calling it
+        concurrently with ``run()`` may produce undefined behavior because
+        the underlying tool executor (e.g. terminal session) is not designed
+        for concurrent access.
+
+        Note: The returned observation is a lightweight wrapper that only
+        preserves the text content and ``is_error`` flag.  Tool-specific
+        fields (e.g. ``exit_code`` on terminal observations) are not
+        available on the client side.
+
         Args:
             tool_name: The name of the tool to execute
             action: The action to pass to the tool executor
@@ -1421,8 +1438,6 @@ class RemoteConversation(BaseConversation):
         Raises:
             RuntimeError: If the tool execution fails on the server
         """
-        from openhands.sdk.tool.schema import Observation
-
         payload = {
             "tool_name": tool_name,
             "action": action.model_dump(mode="json"),
@@ -1439,15 +1454,10 @@ class RemoteConversation(BaseConversation):
 
         # Server returns observation.model_dump(mode="json") which has:
         #   {"content": [{"text": "...", "kind": "text"}, ...], "is_error": bool}
-        # Extract text from the content array.
-        text = ""
+        # Concatenate all text content items.
         content = observation_data.get("content", [])
-        if content and isinstance(content, list) and len(content) > 0:
-            text = content[0].get("text", "")
-
-        # Use a concrete subclass since Observation is abstract
-        class _RemoteObservation(Observation):
-            pass
+        parts = [item.get("text", "") for item in content if isinstance(item, dict)]
+        text = "\n".join(parts) if parts else ""
 
         return _RemoteObservation.from_text(text=text, is_error=is_error)
 

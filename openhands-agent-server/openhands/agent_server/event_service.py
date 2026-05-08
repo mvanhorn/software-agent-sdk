@@ -402,9 +402,13 @@ class EventService:
     async def execute_tool(self, tool_name: str, action_dict: dict) -> dict:
         """Execute a tool directly on the conversation.
 
-        Bypasses the agent loop. Useful for pre-run setup operations
-        like running .openhands/setup.sh through the agent's terminal
+        Bypasses the agent loop. Intended for **pre-run** setup operations
+        like running ``.openhands/setup.sh`` through the agent's terminal
         tool so environment changes persist in the agent's session.
+
+        Calling this concurrently with ``run()`` may produce undefined
+        behavior because the underlying tool executor (e.g. terminal
+        session) is not designed for concurrent access.
 
         Args:
             tool_name: The name of the tool to execute (e.g., 'terminal')
@@ -424,7 +428,10 @@ class EventService:
         loop = asyncio.get_running_loop()
 
         def _execute():
-            # Get the tool to resolve the action type
+            # LocalConversation.execute_tool() handles _ensure_agent_ready()
+            # and tool lookup internally.  We need a pre-lookup here only to
+            # validate action_dict against the tool's action type before
+            # passing it through.
             conversation._ensure_agent_ready()
             tool = conversation.agent.tools_map.get(tool_name)
             if tool is None:
@@ -432,7 +439,6 @@ class EventService:
                 raise KeyError(
                     f"Tool '{tool_name}' not found. Available tools: {available_tools}"
                 )
-            # Validate the action dict against the tool's action type
             action = tool.action_type.model_validate(action_dict)
             observation = conversation.execute_tool(tool_name, action)
             return observation.model_dump(mode="json")
