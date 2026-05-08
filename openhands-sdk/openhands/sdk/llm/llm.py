@@ -24,12 +24,12 @@ from pydantic.json_schema import SkipJsonSchema
 from openhands.sdk.llm.fallback_strategy import FallbackStrategy
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.settings.metadata import SettingProminence, field_meta
-from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
+    from openhands.sdk.llm.auth.openai import OpenAIAuthMethod
     from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.llm.auth.openai import transform_for_subscription
@@ -62,6 +62,7 @@ from litellm.types.llms.openai import (
     RefusalDeltaEvent,
     ResponseCompletedEvent,
     ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
 )
 from litellm.types.utils import (
     Delta,
@@ -92,6 +93,7 @@ from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
+from openhands.sdk.llm.utils.image_resize import maybe_resize_messages_for_provider
 from openhands.sdk.llm.utils.litellm_provider import infer_litellm_provider
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_features
@@ -178,7 +180,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",
-        json_schema_extra=field_meta(SettingProminence.CRITICAL),
+        json_schema_extra=field_meta(SettingProminence.MAJOR),
     )
     api_version: str | None = Field(
         default=None,
@@ -389,14 +391,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         description="The seed to use for random number generation.",
     )
-    safety_settings: list[dict[str, str]] | None = Field(
-        default=None,
-        deprecated=("Deprecated since v1.15.0 and scheduled for removal in v1.20.0."),
-        description=(
-            "No-op. Safety settings are no longer applied. "
-            "Deprecated since v1.15.0 and scheduled for removal in v1.20.0."
-        ),
-    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -449,6 +443,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
     _is_subscription: bool = PrivateAttr(default=False)
     _litellm_provider: str | None = PrivateAttr(default=None)
+    _prompt_cache_key: str | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -457,20 +452,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Validators
     # =========================================================================
-    @field_validator("safety_settings", mode="before")
-    @classmethod
-    def _warn_safety_settings_deprecated(
-        cls, v: list[dict[str, str]] | None
-    ) -> list[dict[str, str]] | None:
-        if v is not None:
-            warn_deprecated(
-                "LLM.safety_settings",
-                deprecated_in="1.15.0",
-                removed_in="1.20.0",
-                details="Safety settings are no longer applied.",
-            )
-        return v
-
     @field_validator(
         "api_key", "aws_access_key_id", "aws_secret_access_key", "aws_session_token"
     )
@@ -501,6 +482,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Use `or` instead of dict.get() to handle explicit None values
             d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
+        # Fix base_url for direct OpenAI - API expects /v1 suffix
+        # If base_url is "https://api.openai.com", set to None to use LiteLLM default
+        if model_val.startswith("openai/"):
+            base = d.get("base_url")
+            if base == "https://api.openai.com" or base == "https://api.openai.com/":
+                d["base_url"] = None  # Let LiteLLM use its default which includes /v1
+
         return d
 
     @model_validator(mode="after")
@@ -523,18 +511,22 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.aws_region_name:
             os.environ["AWS_REGION_NAME"] = self.aws_region_name
 
-        # Metrics + Telemetry wiring
+        # Metrics + Telemetry wiring. Guard both: this validator re-runs whenever
+        # the LLM is passed into another Pydantic model (e.g. RegistryEvent),
+        # and replacing _telemetry would silently drop any callback callers
+        # have attached via telemetry.set_*_callback().
         if self._metrics is None:
             self._metrics = Metrics(model_name=self.model)
 
-        self._telemetry = Telemetry(
-            model_name=self.model,
-            log_enabled=self.log_completions,
-            log_dir=self.log_completions_folder if self.log_completions else None,
-            input_cost_per_token=self.input_cost_per_token,
-            output_cost_per_token=self.output_cost_per_token,
-            metrics=self._metrics,
-        )
+        if self._telemetry is None:
+            self._telemetry = Telemetry(
+                model_name=self.model,
+                log_enabled=self.log_completions,
+                log_dir=self.log_completions_folder if self.log_completions else None,
+                input_cost_per_token=self.input_cost_per_token,
+                output_cost_per_token=self.output_cost_per_token,
+                metrics=self._metrics,
+            )
 
         # Tokenizer
         if self.custom_tokenizer:
@@ -775,7 +767,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"for model {self.model}"
             )
             formatted_messages, kwargs = self.pre_request_prompt_mock(
-                formatted_messages, cc_tools or [], kwargs
+                formatted_messages,
+                cc_tools or [],
+                kwargs,
+                include_security_params=add_security_risk_prediction,
             )
 
         # 3) normalize provider params
@@ -824,7 +819,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if use_mock_tools:
                 raw_resp = copy.deepcopy(resp)
                 resp = self.post_response_prompt_mock(
-                    resp, nonfncall_msgs=formatted_messages, tools=cc_tools
+                    resp,
+                    nonfncall_msgs=formatted_messages,
+                    tools=cc_tools,
+                    include_security_params=add_security_risk_prediction,
                 )
             # 6) telemetry
             self._telemetry.on_response(resp, raw_resp=raw_resp)
@@ -999,7 +997,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         stream_callback = on_token if user_enable_streaming else None
+                        # Collect output items from streaming events.
+                        # Some endpoints (e.g., Codex subscription) send output
+                        # items as separate events but the final response.completed
+                        # event has output=[].  We accumulate them here and patch
+                        # the completed response if needed.
+                        collected_output_items: list[Any] = []
                         for event in ret:
+                            if event is None:
+                                continue
+                            # Collect finished output items
+                            evt_type = getattr(event, "type", None)
+                            if evt_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+                                item = getattr(event, "item", None)
+                                if item is not None:
+                                    collected_output_items.append(item)
                             if stream_callback is None:
                                 continue
                             if isinstance(
@@ -1033,6 +1045,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                             )
 
                         completed_resp = completed_event.response
+
+                        # Patch empty output with items collected from stream
+                        if not completed_resp.output and collected_output_items:
+                            completed_resp.output = collected_output_items
 
                         self._telemetry.on_response(completed_resp)
                         return completed_resp
@@ -1086,6 +1102,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         self._litellm_provider = provider
         return provider
 
+    def _infer_model_info_provider(self) -> str | None:
+        if self._model_info is not None:
+            provider = self._model_info.get("litellm_provider")
+            if isinstance(provider, str) and provider:
+                return provider
+
+        return self._infer_litellm_provider()
+
     def _get_litellm_api_key_value(self) -> str | None:
         api_key_value: str | None = None
         if self.api_key:
@@ -1135,6 +1159,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     message="Accessing the 'model_fields' attribute.*",
                 )
                 api_key_value = self._get_litellm_api_key_value()
+
+                # When streaming, request usage in the final chunk so that
+                # detailed token breakdowns (prompt_tokens_details with
+                # cached_tokens, etc.) are not silently discarded by
+                # litellm's streaming handler.
+                if enable_streaming:
+                    kwargs.setdefault("stream_options", {"include_usage": True})
 
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
@@ -1325,8 +1356,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         if not self.caching_prompt:
             return False
-        # We don't need to look-up model_info, because
-        # only Anthropic models need explicit caching breakpoints
+        # We don't need to look up model_info because explicit caching
+        # breakpoint support is tracked in the local feature table.
         return (
             self.caching_prompt
             and get_features(self._model_name_for_capabilities()).supports_prompt_cache
@@ -1366,7 +1397,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 # Single block: mark it for caching
                 sys_content[0].cache_prompt = True
 
-        # NOTE: this is only needed for anthropic
+        # Anthropic and Gemini both use these cache_control markers. LiteLLM
+        # performs the provider-specific cache setup for Gemini downstream.
         for message in reversed(messages):
             if message.role in ("user", "tool"):
                 message.content[
@@ -1391,6 +1423,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else model_features.force_string_serializer
         )
         send_reasoning_content = model_features.send_reasoning_content
+
+        messages = maybe_resize_messages_for_provider(
+            messages,
+            provider=self._infer_model_info_provider(),
+            vision_enabled=vision_enabled,
+        )
 
         formatted_messages = [
             message.to_chat_dict(
@@ -1417,6 +1455,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - For subscription mode, system prompts are prepended to user content
         """
         msgs = copy.deepcopy(messages)
+
+        # Subscription mode (store=false): strip reasoning items from prior
+        # assistant turns. The Codex endpoint doesn't persist items, so
+        # referencing their IDs in follow-up requests causes a 404.
+        if self.is_subscription:
+            for m in msgs:
+                if m.role == "assistant" and m.responses_reasoning_item is not None:
+                    m.responses_reasoning_item = None
 
         # Determine vision based on model detection
         vision_active = self.vision_is_active()
@@ -1542,6 +1588,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         model: str,
         force_login: bool = False,
         open_browser: bool = True,
+        auth_method: OpenAIAuthMethod = "browser",
         **llm_kwargs,
     ) -> LLM:
         """Authenticate with a subscription service and return an LLM instance.
@@ -1568,6 +1615,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 credentials exist.
             open_browser: Whether to automatically open the browser for the
                 OAuth login flow.
+            auth_method: Login method to use: "browser" or "device_code".
             **llm_kwargs: Additional arguments to pass to the LLM constructor.
 
         Returns:
@@ -1595,5 +1643,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model=model,
             force_login=force_login,
             open_browser=open_browser,
+            auth_method=auth_method,
             **llm_kwargs,
         )
