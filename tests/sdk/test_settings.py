@@ -863,7 +863,15 @@ def test_conversation_settings_carries_controls_default() -> None:
     assert settings.controls.save == "worktree"
 
 
-def test_conversation_settings_create_request_injects_controls_into_prompt() -> None:
+def test_conversation_settings_create_request_carries_controls_on_request() -> None:
+    """ConversationSettings.controls flows onto the start request payload.
+
+    The catalog of controls lives in the system prompt (rendered once, no
+    live values); the *active* values are shipped per-turn via the user
+    message's ``<ACTIVE_CONTROLS>`` block, so we no longer mutate
+    ``Agent.system_prompt_kwargs``. Instead, the start request carries the
+    initial ``controls`` seed which is plumbed into ``ConversationState``.
+    """
     from openhands.sdk import AgentControls
 
     settings = ConversationSettings(
@@ -878,22 +886,20 @@ def test_conversation_settings_create_request_injects_controls_into_prompt() -> 
         workspace=workspace,
     )
 
-    # The agent on the request should have controls in its system_prompt_kwargs.
+    # Controls land on the request itself, not on the agent's prompt kwargs.
     assert isinstance(request.agent, Agent)
-    assert request.agent.system_prompt_kwargs.get("controls") == AgentControls(
-        plan="lots", verify="none", save="pr"
-    )
-
-    # And the rendered system prompt should advertise the values.
-    rendered = request.agent.static_system_message
-    assert "<CONTROLS>" in rendered
-    assert "Currently selected: `lots`" in rendered
-    assert "Currently selected: `none`" in rendered
-    assert "Currently selected: `pr`" in rendered
+    assert "controls" not in request.agent.system_prompt_kwargs
+    assert request.controls == AgentControls(plan="lots", verify="none", save="pr")
 
 
-def test_conversation_settings_create_request_skips_controls_for_acp() -> None:
-    """ACP agents own their own prompt, so we don't inject controls there."""
+def test_conversation_settings_create_request_carries_controls_for_acp() -> None:
+    """ACP requests carry the same controls field as OpenHands requests.
+
+    ACP can't take a custom system prompt, so the catalog isn't rendered for
+    that path, but the per-turn ``<ACTIVE_CONTROLS>`` injection still works
+    via ``AgentContext`` text. The initial seed therefore needs to travel on
+    the start request just like for OpenHands.
+    """
     from openhands.sdk import AgentControls
 
     settings = ConversationSettings(
@@ -908,16 +914,24 @@ def test_conversation_settings_create_request_skips_controls_for_acp() -> None:
         workspace=workspace,
     )
 
-    # ACP agent's system_prompt_kwargs is left untouched.
     assert request.agent.system_prompt_kwargs == {}
+    assert request.controls == AgentControls(plan="lots", verify="lots", save="merge")
 
 
-def test_default_system_prompt_omits_controls_section_when_unset() -> None:
-    """An ``Agent`` built without controls should not advertise a CONTROLS block."""
+def test_default_system_prompt_advertises_controls_catalog() -> None:
+    """The CONTROLS catalog is rendered unconditionally in the base prompt.
+
+    Previously the section was conditional on ``controls`` being injected
+    into ``system_prompt_kwargs``; now the catalog is documentation that the
+    agent always carries, and live values arrive on each user message via
+    ``<ACTIVE_CONTROLS>``.
+    """
     agent = OpenHandsAgentSettings(llm=LLM(model="test-model")).create_agent()
 
     rendered = agent.static_system_message
-    assert "<CONTROLS>" not in rendered
+    assert "<CONTROLS>" in rendered
+    # No "Currently selected" because there's no live value baked in here.
+    assert "Currently selected" not in rendered
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -666,6 +667,7 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        controls: AgentControls | None = None,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -768,6 +770,13 @@ class RemoteConversation(BaseConversation):
                 "hook_config": hook_config.model_dump() if hook_config else None,
                 # Include tags if provided
                 "tags": tags or {},
+                # Initial workflow controls (Plan / Verify / Save). Omit to let
+                # the server fall back to whatever it has configured as default.
+                **(
+                    {"controls": controls.model_dump(mode="json")}
+                    if controls is not None
+                    else {}
+                ),
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -1216,6 +1225,15 @@ class RemoteConversation(BaseConversation):
             "POST",
             f"{self._conversation_action_base_path}/{self._id}/security_analyzer",
             json=payload,
+        )
+
+    def set_controls(self, controls: AgentControls) -> None:
+        """Update the live workflow controls on the remote conversation."""
+        _send_request(
+            self._client,
+            "POST",
+            f"{self._conversation_action_base_path}/{self._id}/controls",
+            json={"controls": controls.model_dump(mode="json")},
         )
 
     def reject_pending_actions(self, reason: str = "User rejected the action") -> None:

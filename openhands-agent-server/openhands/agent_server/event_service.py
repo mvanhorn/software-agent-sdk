@@ -36,6 +36,7 @@ from openhands.sdk.git.utils import run_git_command, validate_git_repository
 from openhands.sdk.llm.streaming import LLMStreamChunk
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
@@ -625,10 +626,15 @@ class EventService:
             cipher=self.cipher,
             hook_config=self.stored.hook_config,
             tags=self.stored.tags,
+            controls=self.stored.controls,
         )
 
         conversation.set_confirmation_policy(self.stored.confirmation_policy)
         conversation.set_security_analyzer(self.stored.security_analyzer)
+        # Reapply controls so that on resume the agent-server's tracked value
+        # wins over whatever was persisted in BASE_STATE last turn (the
+        # StoredConversation is the source of truth for the live setting).
+        conversation.set_controls(self.stored.controls)
         self._conversation = conversation
         self._conversation._state.set_write_guard(self._write_guard)
         self._lease_task = asyncio.create_task(self._renew_lease_loop())
@@ -792,6 +798,20 @@ class EventService:
         await loop.run_in_executor(
             None, self._conversation.set_security_analyzer, security_analyzer
         )
+
+    async def set_controls(self, controls: AgentControls):
+        """Update live workflow controls (Plan / Verify / Save).
+
+        Forwards to the live conversation, which will inject the updated
+        ``<ACTIVE_CONTROLS>`` block on the next user message. Mirrors
+        :meth:`set_confirmation_policy` — the in-memory ``ConversationState``
+        autosaves the change; the immutable ``StoredConversation`` keeps the
+        initial seed used at start-up time.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._conversation.set_controls, controls)
 
     async def close(self):
         if self._lease_task is not None:

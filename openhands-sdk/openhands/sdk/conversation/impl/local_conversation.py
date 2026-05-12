@@ -53,6 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.skills.utils import expand_mcp_variables
 from openhands.sdk.subagent import (
     AgentDefinition,
@@ -108,6 +109,7 @@ class LocalConversation(BaseConversation):
         delete_on_close: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        controls: AgentControls | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -149,6 +151,9 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            controls: Optional initial workflow controls (Plan / Verify / Save).
+                  Persisted on the conversation state and mutable mid-conversation
+                  via :meth:`set_controls`.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -188,6 +193,7 @@ class LocalConversation(BaseConversation):
             stuck_detection=stuck_detection,
             cipher=cipher,
             tags=tags,
+            controls=controls,
         )
 
         self._pin_prompt_cache_key()
@@ -733,6 +739,15 @@ class LocalConversation(BaseConversation):
                     extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
 
+            # Inject the active workflow controls (Plan / Verify / Save) next
+            # to each user message so the agent reads the current values for
+            # this turn rather than relying on the static system prompt or
+            # remembering an earlier "switch plan to X" instruction. The CONTROLS
+            # catalog in system_prompt.j2 documents how to interpret this block.
+            extended_content.append(
+                TextContent(text=self._state.controls.render_active_block())
+            )
+
             user_msg_event = MessageEvent(
                 source="user",
                 llm_message=message,
@@ -973,6 +988,24 @@ class LocalConversation(BaseConversation):
         """Set the security analyzer for the conversation."""
         with self._state:
             self._state.security_analyzer = analyzer
+
+    def set_controls(self, controls: AgentControls) -> None:
+        """Update the live workflow controls (Plan / Verify / Save).
+
+        The new values are picked up by the next :meth:`send_message` call,
+        which injects an ``<ACTIVE_CONTROLS>`` block into the user message's
+        ``extended_content``. The agent reads that block to honor the latest
+        directives without needing to remember earlier in-conversation
+        instructions.
+        """
+        with self._state:
+            self._state.controls = controls
+        logger.info(
+            "Controls updated: plan=%s verify=%s save=%s",
+            controls.plan,
+            controls.verify,
+            controls.save,
+        )
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""

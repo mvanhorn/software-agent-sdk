@@ -25,6 +25,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.subagent.schema import AgentDefinition
 from openhands.sdk.utils.models import kind_of
 from openhands.sdk.workspace import LocalWorkspace
@@ -90,6 +91,15 @@ class _StartConversationRequestBase(BaseModel):
     security_analyzer: SecurityAnalyzerBase | None = Field(
         default=None,
         description="Optional security analyzer to evaluate action risks.",
+    )
+    controls: AgentControls = Field(
+        default_factory=AgentControls,
+        description=(
+            "Initial workflow controls (Plan / Verify / Save) for the "
+            "conversation. The active values are shipped to the agent on each "
+            "user message via an <ACTIVE_CONTROLS> block, and can be changed "
+            "mid-conversation via Conversation.set_controls."
+        ),
     )
     initial_message: SendMessageRequest | None = Field(
         default=None, description="Initial message to pass to the LLM"

@@ -30,6 +30,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.utils import OpenHandsUUID, utc_now
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -295,6 +296,16 @@ class SetSecurityAnalyzerRequest(BaseModel):
     security_analyzer: SecurityAnalyzerBase | None = Field(
         description="The security analyzer to set"
     )
+
+
+class SetControlsRequest(BaseModel):
+    """Payload to update workflow controls (Plan / Verify / Save).
+
+    The agent picks up the new values on the next user message via the
+    ``<ACTIVE_CONTROLS>`` block injected into ``extended_content``.
+    """
+
+    controls: AgentControls = Field(description="The new workflow controls to apply")
 
 
 class UpdateConversationRequest(BaseModel):

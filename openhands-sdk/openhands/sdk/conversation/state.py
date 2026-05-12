@@ -35,6 +35,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
@@ -122,6 +123,16 @@ class ConversationState(OpenHandsModel):
     security_analyzer: SecurityAnalyzerBase | None = Field(
         default=None,
         description="Optional security analyzer to evaluate action risks.",
+    )
+    controls: AgentControls = Field(
+        default_factory=AgentControls,
+        description=(
+            "Live workflow controls (Plan / Verify / Save). Seeded from the "
+            "start request on conversation creation; mutable mid-conversation "
+            "via Conversation.set_controls. The latest values are injected "
+            "into each user message's extended_content so the agent always "
+            "reads the current state next to the current task."
+        ),
     )
 
     activated_knowledge_skills: list[str] = Field(
@@ -282,6 +293,7 @@ class ConversationState(OpenHandsModel):
         stuck_detection: bool = True,
         cipher: Cipher | None = None,
         tags: dict[str, str] | None = None,
+        controls: AgentControls | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -386,6 +398,7 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
             tags=tags or {},
+            controls=controls if controls is not None else AgentControls(),
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)

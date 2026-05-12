@@ -34,6 +34,7 @@ from openhands.agent_server.models import (
     ForkConversationRequest,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
+    SetControlsRequest,
     SetSecurityAnalyzerRequest,
     StartConversationRequest,
     Success,
@@ -297,6 +298,27 @@ async def set_conversation_security_analyzer(
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     await event_service.set_security_analyzer(request.security_analyzer)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/controls",
+    responses={404: {"description": "Item not found"}},
+)
+async def set_conversation_controls(
+    conversation_id: UUID,
+    request: SetControlsRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Update workflow controls (Plan / Verify / Save) for a conversation.
+
+    The agent reads the new values on the next user message via the
+    ``<ACTIVE_CONTROLS>`` block injected into ``extended_content``.
+    """
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.set_controls(request.controls)
     return Success()
 
 

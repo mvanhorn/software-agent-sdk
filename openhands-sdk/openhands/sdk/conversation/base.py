@@ -24,6 +24,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -193,6 +194,16 @@ class BaseConversation(ABC):
     @abstractmethod
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the conversation."""
+        ...
+
+    @abstractmethod
+    def set_controls(self, controls: AgentControls) -> None:
+        """Update the live workflow controls (Plan / Verify / Save).
+
+        The new values are advertised to the agent through an
+        ``<ACTIVE_CONTROLS>`` block appended to each user message's
+        ``extended_content`` (see ``LocalConversation.send_message``).
+        """
         ...
 
     @property

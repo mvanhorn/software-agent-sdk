@@ -18,6 +18,7 @@ from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretValue
+from openhands.sdk.settings.controls import AgentControls
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -80,6 +81,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        controls: AgentControls | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -104,6 +106,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        controls: AgentControls | None = None,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -128,6 +131,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        controls: AgentControls | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -181,6 +185,7 @@ class Conversation:
                 secrets=secrets,
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
+                controls=controls,
             )
 
         return LocalConversation(
@@ -199,4 +204,5 @@ class Conversation:
             secrets=secrets,
             delete_on_close=delete_on_close,
             tags=tags,
+            controls=controls,
         )
