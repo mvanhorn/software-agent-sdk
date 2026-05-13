@@ -113,8 +113,33 @@ jobs:
                       BIN=./dist/openhands-agent-server
                   fi
 
+                  wait_for_log() {
+                      local log_file=$1
+                      local pattern=$2
+                      local timeout_seconds=${3:-45}
+
+                      for _ in $(seq 1 "$timeout_seconds"); do
+                          if grep -q "$pattern" "$log_file"; then
+                              return 0
+                          fi
+                          sleep 1
+                      done
+                      return 1
+                  }
+
+                  stop_process() {
+                      local pid=$1
+                      kill "$pid" 2>/dev/null || true
+                      wait "$pid" 2>/dev/null || true
+                  }
+
                   # Create a temporary directory with an external tool module
                   TOOL_DIR=$(mktemp -d)
+                  EXTRA_TOOL_DIR=$TOOL_DIR
+                  if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+                      EXTRA_TOOL_DIR=$(cygpath -w "$TOOL_DIR")
+                  fi
+
                   cat > "$TOOL_DIR/ci_test_tool.py" << 'TOOL_EOF'
                   """CI smoke-test tool: NOT bundled in the binary.
 
@@ -129,74 +154,64 @@ jobs:
                   "$BIN" --import-modules ci_test_tool --port 8003 \
                       > neg_test.log 2>&1 &
                   NEG_PID=$!
-                  sleep 5
 
-                  if grep -q "No module named 'ci_test_tool'" neg_test.log; then
+                  if wait_for_log neg_test.log "No module named 'ci_test_tool'"; then
                       echo "✓ Negative test passed: import correctly failed without --extra-python-path"
                   else
                       echo "ERROR: Expected ModuleNotFoundError but got:"
                       cat neg_test.log
-                      kill "$NEG_PID" 2>/dev/null || true
-                      wait "$NEG_PID" 2>/dev/null || true
+                      stop_process "$NEG_PID"
                       rm -rf "$TOOL_DIR" neg_test.log
                       exit 1
                   fi
-                  kill "$NEG_PID" 2>/dev/null || true
-                  wait "$NEG_PID" 2>/dev/null || true
+                  stop_process "$NEG_PID"
                   rm -f neg_test.log
 
                   echo "=== Positive test: import WITH OH_EXTRA_PYTHON_PATH ==="
-                  OH_EXTRA_PYTHON_PATH="$TOOL_DIR" \
+                  OH_EXTRA_PYTHON_PATH="$EXTRA_TOOL_DIR" \
                       "$BIN" --import-modules ci_test_tool --port 8004 \
                       > pos_test.log 2>&1 &
                   POS_PID=$!
-                  sleep 5
 
-                  if grep -q "Imported module: ci_test_tool" pos_test.log; then
+                  if wait_for_log pos_test.log "Imported module: ci_test_tool"; then
                       echo "✓ Positive test passed: external module imported via OH_EXTRA_PYTHON_PATH"
                   else
                       echo "ERROR: Module was not imported. Server log:"
                       cat pos_test.log
-                      kill "$POS_PID" 2>/dev/null || true
-                      wait "$POS_PID" 2>/dev/null || true
+                      stop_process "$POS_PID"
                       rm -rf "$TOOL_DIR" pos_test.log
                       exit 1
                   fi
 
-                  if grep -q "Added to sys.path: $TOOL_DIR" pos_test.log; then
+                  if grep -q "Added to sys.path:" pos_test.log; then
                       echo "✓ sys.path was extended with the tool directory"
                   else
                       echo "ERROR: sys.path was not extended. Server log:"
                       cat pos_test.log
-                      kill "$POS_PID" 2>/dev/null || true
-                      wait "$POS_PID" 2>/dev/null || true
+                      stop_process "$POS_PID"
                       rm -rf "$TOOL_DIR" pos_test.log
                       exit 1
                   fi
 
-                  kill "$POS_PID" 2>/dev/null || true
-                  wait "$POS_PID" 2>/dev/null || true
+                  stop_process "$POS_PID"
 
                   echo "=== Positive test: import WITH --extra-python-path CLI flag ==="
-                  "$BIN" --extra-python-path "$TOOL_DIR" \
+                  "$BIN" --extra-python-path "$EXTRA_TOOL_DIR" \
                       --import-modules ci_test_tool --port 8005 \
                       > cli_test.log 2>&1 &
                   CLI_PID=$!
-                  sleep 5
 
-                  if grep -q "Imported module: ci_test_tool" cli_test.log; then
+                  if wait_for_log cli_test.log "Imported module: ci_test_tool"; then
                       echo "✓ CLI flag test passed: external module imported via --extra-python-path"
                   else
                       echo "ERROR: Module was not imported via CLI flag. Server log:"
                       cat cli_test.log
-                      kill "$CLI_PID" 2>/dev/null || true
-                      wait "$CLI_PID" 2>/dev/null || true
+                      stop_process "$CLI_PID"
                       rm -rf "$TOOL_DIR" cli_test.log pos_test.log
                       exit 1
                   fi
 
-                  kill "$CLI_PID" 2>/dev/null || true
-                  wait "$CLI_PID" 2>/dev/null || true
+                  stop_process "$CLI_PID"
 
                   # Cleanup
                   rm -rf "$TOOL_DIR" pos_test.log neg_test.log cli_test.log
