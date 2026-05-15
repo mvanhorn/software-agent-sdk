@@ -19,10 +19,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Generator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -120,6 +122,60 @@ MAX_ACP_CONTENT_CHARS: int = 30_000
 # subprocess can reach api.anthropic.com with its own OAuth token.
 _ENV_CONFLICT_MAP: dict[str, frozenset[str]] = {
     "CLAUDE_CONFIG_DIR": frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"}),
+}
+
+
+@dataclass(frozen=True)
+class _FileSecretSpec:
+    """How to materialise a reserved file-content secret into a file on disk.
+
+    Some ACP servers authenticate via a JSON credential file rather than an
+    env var (e.g. Codex's ``$CODEX_HOME/auth.json``, Gemini's Vertex AI
+    service-account / ADC file pointed to by ``GOOGLE_APPLICATION_CREDENTIALS``).
+    When a secret with one of the names in :data:`_FILE_SECRETS` is present
+    in ``AgentContext.secrets`` the SDK writes its value to a per-agent temp
+    directory, exposes the corresponding env var on the subprocess, and
+    drops the secret from the regular env-var injection path so the
+    (potentially multi-KB) payload is not also exported as a plain env var.
+
+    ``env_points_to`` controls whether ``env_var`` receives the directory
+    that contains the file (``"dir"``) or the absolute path to the file
+    itself (``"file"``).
+    """
+
+    filename: str
+    env_var: str
+    env_points_to: Literal["dir", "file"]
+
+
+# Reserved secret names that ACPAgent materialises as files rather than
+# exporting as plain env vars. Adding a new entry here is the supported
+# way to teach the SDK about another file-based credential convention
+# (e.g. a future ACP server that needs a credentials JSON on disk).
+#
+# Why each entry exists:
+# - ``CODEX_AUTH_JSON``: Codex's ChatGPT-subscription auth lives in
+#   ``$CODEX_HOME/auth.json``. The codex binary writes back to this file
+#   on token refresh, so it must be a real writable file rather than an
+#   env var (which would lose refresh state between turns).
+# - ``GOOGLE_APPLICATION_CREDENTIALS_JSON``: Gemini's Vertex AI service-
+#   account and Application Default Credentials auth uses a JSON file
+#   pointed to by ``GOOGLE_APPLICATION_CREDENTIALS``. Personal-account
+#   "Sign in with Google" subscriptions are intentionally **not** covered:
+#   gemini-cli caches those credentials encrypted with a key derived from
+#   the originating machine's hostname + username, so the cached file is
+#   not transportable across hosts.
+_FILE_SECRETS: dict[str, _FileSecretSpec] = {
+    "CODEX_AUTH_JSON": _FileSecretSpec(
+        filename="auth.json",
+        env_var="CODEX_HOME",
+        env_points_to="dir",
+    ),
+    "GOOGLE_APPLICATION_CREDENTIALS_JSON": _FileSecretSpec(
+        filename="gcloud-credentials.json",
+        env_var="GOOGLE_APPLICATION_CREDENTIALS",
+        env_points_to="file",
+    ),
 }
 
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
@@ -759,6 +815,13 @@ class ACPAgent(AgentBase):
     _suffix_install_state: str = PrivateAttr(default="unused")
     _installed_suffix: str | None = PrivateAttr(default=None)
 
+    # Per-agent temp directory holding any file-content secrets materialised
+    # from ``AgentContext.secrets`` (see :data:`_FILE_SECRETS`). Created
+    # lazily on the first secret that needs it; cleaned up in :meth:`close`.
+    _file_secrets_tempdir: Any = PrivateAttr(
+        default=None
+    )  # tempfile.TemporaryDirectory | None
+
     # -- Helpers -----------------------------------------------------------
 
     def _record_usage(
@@ -976,6 +1039,74 @@ class ACPAgent(AgentBase):
             additional_secret_infos=secret_infos
         )
 
+    def _materialise_file_secrets(self, env: dict[str, str]) -> dict[str, Any]:
+        """Materialise reserved file-content secrets onto the local filesystem.
+
+        Walks ``self.agent_context.secrets`` for names listed in
+        :data:`_FILE_SECRETS`. Each matching secret has its value written
+        into ``self._file_secrets_tempdir`` and the corresponding env var
+        added to ``env`` so the spawned subprocess can find the file.
+        File-secrets are **dropped** from the returned dict so the regular
+        env-var injection loop does not also export their (potentially
+        large) payloads.
+
+        Returns the subset of ``agent_context.secrets`` that should still
+        flow through the standard env-var injection path. Returns an empty
+        dict when no secrets are present.
+        """
+        if not self.agent_context or not self.agent_context.secrets:
+            return {}
+
+        remaining: dict[str, Any] = {}
+        pending: list[tuple[str, _FileSecretSpec, str]] = []
+        for name, secret in self.agent_context.secrets.items():
+            spec = _FILE_SECRETS.get(name)
+            if spec is None:
+                remaining[name] = secret
+                continue
+            value = (
+                secret.get_value() if isinstance(secret, SecretSource) else str(secret)
+            )
+            if not value:
+                logger.warning(
+                    "Reserved file-secret %r has an empty value; "
+                    "skipping materialisation",
+                    name,
+                )
+                continue
+            pending.append((name, spec, value))
+
+        if not pending:
+            return remaining
+
+        if self._file_secrets_tempdir is None:
+            self._file_secrets_tempdir = tempfile.TemporaryDirectory(
+                prefix="acp-file-secrets-"
+            )
+        base = Path(self._file_secrets_tempdir.name)
+
+        for name, spec, value in pending:
+            # Each file-secret gets its own subdirectory so env-var-to-dir
+            # handlers (e.g. CODEX_HOME) don't inadvertently expose other
+            # file-secrets' files as siblings.
+            target_dir = base / name.lower()
+            target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target_path = target_dir / spec.filename
+            target_path.write_text(value)
+            target_path.chmod(0o600)
+            env[spec.env_var] = (
+                str(target_dir) if spec.env_points_to == "dir" else str(target_path)
+            )
+            logger.info(
+                "Materialised file-secret %r → %s (%s=%s)",
+                name,
+                target_path,
+                spec.env_var,
+                env[spec.env_var],
+            )
+
+        return remaining
+
     def _start_acp_server(self, state: ConversationState) -> None:
         """Start the ACP subprocess and initialize the session."""
         client = _OpenHandsACPBridge()
@@ -985,20 +1116,26 @@ class ACPAgent(AgentBase):
         env = default_environment()
         env.update(os.environ)
         env.update(self.acp_env)
-        # Inject secrets from agent_context. acp_env entries take precedence
-        # (already set above), so we only fill keys not already present.
-        # SecretSource.get_value() is synchronous; calling it here is safe
-        # because _start_acp_server is a regular (non-async) method.
-        if self.agent_context and self.agent_context.secrets:
-            for name, secret in self.agent_context.secrets.items():
-                if name not in env:
-                    value = (
-                        secret.get_value()
-                        if isinstance(secret, SecretSource)
-                        else str(secret)
-                    )
-                    if value:
-                        env[name] = value
+        # Materialise reserved file-secrets (e.g. Codex auth.json, Gemini
+        # GAC JSON) to local files and set their controlling env vars on
+        # ``env``. Returned dict is ``agent_context.secrets`` minus the
+        # file-secrets, which we now feed through the regular env-var
+        # injection loop below.
+        regular_secrets = self._materialise_file_secrets(env)
+        # Inject the remaining (plain) secrets from agent_context. acp_env
+        # entries take precedence (already set above), so we only fill keys
+        # not already present. SecretSource.get_value() is synchronous;
+        # calling it here is safe because _start_acp_server is a regular
+        # (non-async) method.
+        for name, secret in regular_secrets.items():
+            if name not in env:
+                value = (
+                    secret.get_value()
+                    if isinstance(secret, SecretSource)
+                    else str(secret)
+                )
+                if value:
+                    env[name] = value
         # Strip CLAUDECODE so nested Claude Code instances don't refuse to start
         env.pop("CLAUDECODE", None)
 
@@ -1602,6 +1739,16 @@ class ACPAgent(AgentBase):
             except Exception as e:
                 logger.debug("Error closing executor: %s", e)
             self._executor = None
+
+        # Remove any file-secrets we materialised for this agent. Done after
+        # subprocess + executor teardown so we don't yank credential files
+        # out from under a still-running child.
+        if self._file_secrets_tempdir is not None:
+            try:
+                self._file_secrets_tempdir.cleanup()
+            except Exception as e:
+                logger.debug("Error cleaning up ACP file-secrets tempdir: %s", e)
+            self._file_secrets_tempdir = None
 
     def __del__(self) -> None:
         try:

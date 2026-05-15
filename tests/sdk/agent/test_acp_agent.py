@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3684,6 +3685,164 @@ class TestACPSecretsEnvInjection:
         )
         env = self._run_start_capturing_env(agent, tmp_path)
         assert "EMPTY_SECRET" not in env
+
+
+class TestACPFileSecretMaterialisation:
+    """Reserved secret names get written to disk before the subprocess spawns.
+
+    Some ACP servers authenticate via a JSON credential file rather than an
+    env var. When ``agent_context.secrets`` contains one of the reserved
+    names in :data:`_FILE_SECRETS`, the SDK must write the payload to a
+    per-agent tempdir, set the corresponding env var on the subprocess, and
+    drop the secret from the regular env-var injection path so its
+    (potentially large) payload is not leaked into ``os.environ``.
+    """
+
+    @staticmethod
+    def _run_start_capturing_env(agent, tmp_path) -> dict:
+        return TestACPSecretsEnvInjection._run_start_capturing_env(agent, tmp_path)
+
+    def test_codex_auth_json_materialised_with_codex_home(self, tmp_path):
+        """CODEX_AUTH_JSON → auth.json on disk + CODEX_HOME=<dir>."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        payload = '{"auth_mode":"chatgpt","tokens":{"id_token":"tok"}}'
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr(payload))}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        codex_home = env.get("CODEX_HOME")
+        assert codex_home, "CODEX_HOME should be set after materialisation"
+        auth_path = Path(codex_home) / "auth.json"
+        assert auth_path.is_file()
+        assert auth_path.read_text() == payload
+        # Payload must NOT also be exported as a giant env var
+        assert "CODEX_AUTH_JSON" not in env
+
+    def test_google_credentials_materialised_with_path_env(self, tmp_path):
+        """GOOGLE_APPLICATION_CREDENTIALS_JSON → file + GAC=<file path>."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        payload = '{"type":"service_account","project_id":"p","client_email":"x@y"}'
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                        value=SecretStr(payload)
+                    )
+                }
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        gac = env.get("GOOGLE_APPLICATION_CREDENTIALS")
+        assert gac, "GOOGLE_APPLICATION_CREDENTIALS should be set"
+        gac_path = Path(gac)
+        assert gac_path.is_file()
+        assert gac_path.read_text() == payload
+        assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
+
+    def test_materialised_file_is_readable_only_by_owner(self, tmp_path):
+        """File-secret payloads on disk must be 0o600."""
+        import stat as stat_mod
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        auth_path = Path(env["CODEX_HOME"]) / "auth.json"
+        mode = stat_mod.S_IMODE(auth_path.stat().st_mode)
+        assert mode == 0o600
+
+    def test_plain_secrets_still_exported_as_env_vars(self, tmp_path):
+        """Unknown secret names continue to flow through the env-var path."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                    "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_xyz")),
+                }
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        # File-secret was materialised
+        assert env["CODEX_HOME"]
+        # Plain secret was injected as env var
+        assert env.get("GITHUB_TOKEN") == "ghp_xyz"
+
+    def test_empty_file_secret_value_is_skipped(self, tmp_path):
+        """An empty payload must not produce a file or set CODEX_HOME."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr(""))}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        assert "CODEX_HOME" not in env
+        assert agent._file_secrets_tempdir is None
+
+    def test_multiple_file_secrets_share_one_tempdir(self, tmp_path):
+        """Codex + Gemini in the same agent both materialise under one base."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                    "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                        value=SecretStr('{"type":"service_account"}')
+                    ),
+                }
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        codex_dir = Path(env["CODEX_HOME"]).resolve()
+        gac_file = Path(env["GOOGLE_APPLICATION_CREDENTIALS"]).resolve()
+        # Both live under the same per-agent tempdir, but in distinct subdirs
+        # so handlers that expose their directory don't reveal each other.
+        assert codex_dir.parent == gac_file.parent.parent
+        assert codex_dir != gac_file.parent
+
+    def test_close_removes_materialised_tempdir(self, tmp_path):
+        """``ACPAgent.close()`` must clean up the per-agent tempdir."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={"CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}"))}
+            )
+        )
+        env = self._run_start_capturing_env(agent, tmp_path)
+        codex_home = Path(env["CODEX_HOME"])
+        assert codex_home.is_dir()
+        agent.close()
+        assert not codex_home.exists()
+        assert agent._file_secrets_tempdir is None
 
 
 class TestACPEnvConflictSuppression:
