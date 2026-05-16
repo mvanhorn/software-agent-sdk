@@ -1,7 +1,7 @@
 """Tests for MCP tool parameter secret/environment variable expansion.
 
 This test file demonstrates the gap described in GitHub issue #3277:
-MCP tool parameters do not expand secrets/environment variables (unlike terminal commands).
+MCP tool parameters do not expand secrets/environment variables.
 
 Terminal commands automatically expand $SECRET_NAME to the actual secret value,
 but MCP tool parameters pass the literal string "$SECRET_NAME" to the MCP server.

@@ -89,6 +89,7 @@ def expand_secrets_in_data(
 
     return expand_value(data)
 
+
 # Default timeout for MCP tool execution in seconds
 MCP_TOOL_TIMEOUT_SECONDS = 300
 
@@ -200,13 +201,13 @@ class MCPToolExecutor(ToolExecutor):
             return observation
 
         try:
+            from openhands.sdk.llm import TextContent
+
             secret_registry = conversation.state.secret_registry
             # Mask secrets in all text content blocks
             masked_content = []
             for block in observation.content:
-                if hasattr(block, "text") and block.text:
-                    from openhands.sdk.llm import TextContent
-
+                if isinstance(block, TextContent) and block.text:
                     masked_text = secret_registry.mask_secrets_in_output(block.text)
                     masked_content.append(TextContent(text=masked_text))
                 else:
