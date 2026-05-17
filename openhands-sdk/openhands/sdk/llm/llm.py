@@ -738,6 +738,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         new_llm._is_subscription = self._is_subscription
         new_llm._litellm_provider = self._litellm_provider
+        new_llm._model_info = self._model_info
+        new_llm._prompt_cache_key = self._prompt_cache_key
+        new_llm._effective_max_input_tokens = self._effective_max_input_tokens
+        new_llm._effective_max_output_tokens = self._effective_max_output_tokens
 
         # Create fresh AsyncRunner for the copy
         new_llm._async_runner = AsyncRunner(owner_id=new_llm.usage_id)

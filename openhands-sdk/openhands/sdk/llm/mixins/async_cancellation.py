@@ -168,3 +168,6 @@ class AsyncRunner:
                 )
             else:
                 logger.debug(f"Stopped async runner thread for {self._owner_id}")
+
+        if loop_to_stop is not None and not loop_to_stop.is_closed():
+            loop_to_stop.close()

@@ -878,7 +878,8 @@ class LocalConversation(BaseConversation):
             # Status is already set to PAUSED by interrupt()
             logger.info("Agent step cancelled by interrupt")
         except Exception as e:
-            self._state.execution_status = ConversationExecutionStatus.ERROR
+            with self._state:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
 
             # Add an error event
             self._on_event(
