@@ -3594,7 +3594,10 @@ class TestACPSecretsEnvInjection:
 
     @staticmethod
     def _run_start_capturing_env(
-        agent, tmp_path, capture_args: list[str] | None = None
+        agent,
+        tmp_path,
+        capture_args: list[str] | None = None,
+        extra_os_env: dict[str, str] | None = None,
     ) -> dict:
         """Run _start_acp_server and return the env dict passed to the subprocess."""
         from contextlib import ExitStack
@@ -3645,6 +3648,8 @@ class TestACPSecretsEnvInjection:
                     return_value=MagicMock(),
                 )
             )
+            if extra_os_env is not None:
+                stack.enter_context(patch.dict("os.environ", extra_os_env, clear=False))
             agent._start_acp_server(state)
 
         return captured
@@ -3667,6 +3672,27 @@ class TestACPSecretsEnvInjection:
         )
         env = self._run_start_capturing_env(agent, tmp_path)
         assert env.get("GITHUB_TOKEN") == "ghp_test123"
+
+    def test_agent_context_secret_overrides_inherited_env(self, tmp_path):
+        """A runtime secret wins over the same key inherited from os.environ."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            agent_context=AgentContext(
+                secrets={
+                    "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_agent_secret"))
+                }
+            )
+        )
+        env = self._run_start_capturing_env(
+            agent,
+            tmp_path,
+            extra_os_env={"GITHUB_TOKEN": "ghp_inherited"},
+        )
+
+        assert env.get("GITHUB_TOKEN") == "ghp_agent_secret"
 
     def test_acp_env_takes_precedence_over_agent_context_secret(self, tmp_path):
         """An explicit acp_env entry wins over the same key in agent_context.secrets."""

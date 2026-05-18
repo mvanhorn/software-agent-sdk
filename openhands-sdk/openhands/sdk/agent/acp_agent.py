@@ -1164,12 +1164,12 @@ class ACPAgent(AgentBase):
         # through the regular env-var injection loop below.
         regular_secrets, file_secret_args = self._materialise_file_secrets(env)
         # Inject the remaining (plain) secrets from agent_context. acp_env
-        # entries take precedence (already set above), so we only fill keys
-        # not already present. SecretSource.get_value() is synchronous;
-        # calling it here is safe because _start_acp_server is a regular
-        # (non-async) method.
+        # entries take precedence (already set above), but agent_context
+        # secrets intentionally override inherited os.environ values.
+        # SecretSource.get_value() is synchronous; calling it here is safe
+        # because _start_acp_server is a regular (non-async) method.
         for name, secret in regular_secrets.items():
-            if name not in env:
+            if name not in self.acp_env:
                 value = (
                     secret.get_value()
                     if isinstance(secret, SecretSource)
