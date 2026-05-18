@@ -24,7 +24,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -169,6 +169,17 @@ def _default_acp_file_secret_specs() -> list[ACPFileSecretSpec]:
     ]
 
 
+def _matching_file_secret_names(
+    secrets: Mapping[str, Any] | None,
+    specs: list[ACPFileSecretSpec],
+) -> set[str]:
+    """Return AgentContext secret names consumed by ACP file-secret specs."""
+    if not secrets or not specs:
+        return set()
+    configured_names = {spec.secret_name for spec in specs}
+    return set(secrets) & configured_names
+
+
 # Limit for asyncio.StreamReader buffers used by the ACP subprocess pipes.
 # The default (64 KiB) is too small for session_update notifications that
 # carry large tool-call outputs (e.g. file contents, test results).  When
@@ -226,8 +237,8 @@ _CHATGPT_AUTH_PATH = Path(".codex") / "auth.json"
 def _has_chatgpt_auth_file(env: dict[str, str]) -> bool:
     """Return whether Codex ChatGPT auth is available on disk."""
     codex_home = env.get("CODEX_HOME")
-    if codex_home and (Path(codex_home) / "auth.json").is_file():
-        return True
+    if codex_home:
+        return (Path(codex_home) / "auth.json").is_file()
     return (Path.home() / _CHATGPT_AUTH_PATH).is_file()
 
 
@@ -1040,7 +1051,27 @@ class ACPAgent(AgentBase):
         if not self.agent_context:
             return None
         secret_infos = state.secret_registry.get_secret_infos()
-        return self.agent_context.to_acp_prompt_context(
+        prompt_context = self.agent_context
+        file_secret_names = _matching_file_secret_names(
+            self.agent_context.secrets,
+            self.acp_file_secrets,
+        )
+        if file_secret_names:
+            prompt_context = self.agent_context.model_copy(
+                update={
+                    "secrets": {
+                        name: secret
+                        for name, secret in (self.agent_context.secrets or {}).items()
+                        if name not in file_secret_names
+                    }
+                }
+            )
+            secret_infos = [
+                info
+                for info in secret_infos
+                if info.get("name") not in file_secret_names
+            ]
+        return prompt_context.to_acp_prompt_context(
             additional_secret_infos=secret_infos
         )
 
@@ -1119,6 +1150,13 @@ class ACPAgent(AgentBase):
             _write_secret_file(target_path, value)
 
             for env_name, template in spec.env.items():
+                if env_name in self.acp_env:
+                    logger.info(
+                        "Preserving configured ACP env var %r over file-secret %r",
+                        env_name,
+                        name,
+                    )
+                    continue
                 if env_name in env and not spec.overwrite_env:
                     raise ValueError(
                         f"ACP file-secret {name!r} would overwrite existing "

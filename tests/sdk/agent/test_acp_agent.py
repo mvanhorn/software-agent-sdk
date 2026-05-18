@@ -371,6 +371,29 @@ class TestACPAgentValidation:
         assert "GitHub authentication token" in prompt
         assert "$MY_API_KEY" in prompt
 
+    def test_render_suffix_omits_file_secret_payload_env_vars(self, tmp_path):
+        """File-backed secrets should not be advertised as raw env vars."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        agent = _make_agent(
+            acp_file_secrets=_file_secret_specs_for("codex"),
+            agent_context=AgentContext(
+                secrets={
+                    "CODEX_AUTH_JSON": StaticSecret(value=SecretStr("{}")),
+                    "GITHUB_TOKEN": StaticSecret(value=SecretStr("ghp_secret")),
+                },
+                current_datetime=None,
+            ),
+        )
+
+        prompt = agent._render_suffix(_make_state(tmp_path))
+
+        assert prompt is not None
+        assert "$CODEX_AUTH_JSON" not in prompt
+        assert "$GITHUB_TOKEN" in prompt
+
     def test_agent_context_to_acp_prompt_context_includes_legacy_repo_skills(self):
         context = AgentContext(
             skills=[
@@ -2756,6 +2779,21 @@ class TestSelectAuthMethod:
             "chatgpt"
         )
 
+    def test_codex_home_without_auth_file_disables_home_fallback(self, tmp_path):
+        methods = [
+            self._make_auth_method("chatgpt"),
+            self._make_auth_method("openai-api-key"),
+        ]
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        home_auth_dir = tmp_path / ".codex"
+        home_auth_dir.mkdir()
+        (home_auth_dir / "auth.json").write_text("{}", encoding="utf-8")
+
+        env = {"CODEX_HOME": str(codex_home), "OPENAI_API_KEY": "sk-test"}
+        with patch("openhands.sdk.agent.acp_agent.Path.home", return_value=tmp_path):
+            assert _select_auth_method(methods, env) == "openai-api-key"
+
     def test_empty_auth_methods(self):
         assert _select_auth_method([], {}) is None
 
@@ -3752,11 +3790,13 @@ class TestACPFileSecretMaterialisation:
         agent,
         tmp_path,
         capture_args: list[str] | None = None,
+        extra_os_env: dict[str, str] | None = None,
     ) -> dict:
         return TestACPSecretsEnvInjection._run_start_capturing_env(
             agent,
             tmp_path,
             capture_args=capture_args,
+            extra_os_env=extra_os_env,
         )
 
     def test_codex_auth_json_materialised_with_codex_home(self, tmp_path):
@@ -3874,13 +3914,12 @@ class TestACPFileSecretMaterialisation:
         assert env["CODEX_AUTH_JSON"] == "{}"
 
     def test_file_secret_env_collision_can_raise(self, tmp_path):
-        """Specs can opt out of replacing an existing env var."""
+        """Specs can opt out of replacing an inherited env var."""
         from pydantic import SecretStr
 
         from openhands.sdk.secret import StaticSecret
 
         agent = _make_agent(
-            acp_env={"CUSTOM_AUTH_FILE": "/already/set.json"},
             acp_file_secrets=[
                 ACPFileSecretSpec(
                     secret_name="CUSTOM_AUTH_JSON",
@@ -3895,7 +3934,35 @@ class TestACPFileSecretMaterialisation:
         )
 
         with pytest.raises(ValueError, match="would overwrite"):
-            self._run_start_capturing_env(agent, tmp_path)
+            self._run_start_capturing_env(
+                agent,
+                tmp_path,
+                extra_os_env={"CUSTOM_AUTH_FILE": "/already/set.json"},
+            )
+
+    def test_acp_env_takes_precedence_over_file_secret_env(self, tmp_path):
+        """Explicit acp_env entries must not be overwritten by file-secrets."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.secret import StaticSecret
+
+        explicit_path = "/mounted/gcloud-credentials.json"
+        agent = _make_agent(
+            acp_env={"GOOGLE_APPLICATION_CREDENTIALS": explicit_path},
+            acp_file_secrets=_file_secret_specs_for("gemini-cli"),
+            agent_context=AgentContext(
+                secrets={
+                    "GOOGLE_APPLICATION_CREDENTIALS_JSON": StaticSecret(
+                        value=SecretStr('{"type":"service_account"}')
+                    )
+                }
+            ),
+        )
+
+        env = self._run_start_capturing_env(agent, tmp_path)
+
+        assert env["GOOGLE_APPLICATION_CREDENTIALS"] == explicit_path
+        assert "GOOGLE_APPLICATION_CREDENTIALS_JSON" not in env
 
     def test_materialised_file_is_readable_only_by_owner(self, tmp_path):
         """File-secret payloads on disk must be 0o600."""

@@ -364,7 +364,7 @@ def test_validate_agent_settings_migrates_v0_llm_payload() -> None:
     settings = validate_agent_settings({"llm": {"model": "test-model"}})
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "test-model"
 
@@ -380,8 +380,8 @@ def test_validate_agent_settings_dispatches_current_acp_payload() -> None:
     )
 
     assert isinstance(settings, ACPAgentSettings)
-    # v1 → v2 → v3 keeps ACP payloads intact while bumping schema_version.
-    assert settings.schema_version == 3
+    # v1 → v2 → v3 → v4 keeps ACP payloads intact while bumping schema_version.
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.acp_command == ["npx", "-y", "claude-agent-acp"]
 
 
@@ -397,7 +397,7 @@ def test_validate_agent_settings_canonicalizes_legacy_llm_kind() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     assert settings.agent_kind == "openhands"
     assert settings.llm.model == "legacy-model"
 
@@ -416,16 +416,38 @@ def test_validate_agent_settings_drops_legacy_verification_fields() -> None:
     )
 
     assert isinstance(settings, OpenHandsAgentSettings)
-    assert settings.schema_version == 3
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
     verification = settings.verification.model_dump(mode="json")
     assert verification["critic_enabled"] is True
     assert "confirmation_mode" not in verification
     assert "security_analyzer" not in verification
 
 
+def test_validate_agent_settings_migrates_v3_to_v4_for_acp_file_secrets() -> None:
+    settings = validate_agent_settings(
+        {
+            "schema_version": 3,
+            "agent_kind": "acp",
+            "acp_server": "custom",
+            "acp_command": ["custom-acp"],
+            "acp_file_secrets": [
+                {
+                    "secret_name": "CUSTOM_AUTH_JSON",
+                    "relative_path": "auth.json",
+                    "env": {"CUSTOM_AUTH_FILE": "{file}"},
+                }
+            ],
+        }
+    )
+
+    assert isinstance(settings, ACPAgentSettings)
+    assert settings.schema_version == AGENT_SETTINGS_SCHEMA_VERSION
+    assert settings.acp_file_secrets[0].secret_name == "CUSTOM_AUTH_JSON"
+
+
 def test_validate_agent_settings_rejects_newer_schema_version() -> None:
-    with pytest.raises(ValueError, match="newer than supported version 3"):
-        validate_agent_settings({"schema_version": 4, "llm": {"model": "m"}})
+    with pytest.raises(ValueError, match="newer than supported version 4"):
+        validate_agent_settings({"schema_version": 5, "llm": {"model": "m"}})
 
 
 def test_conversation_settings_from_persisted_migrates_v0_payload() -> None:
