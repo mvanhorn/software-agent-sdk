@@ -303,18 +303,22 @@ class ConversationState(OpenHandsModel):
         ``ConversationState`` lock (``with self._state:``) to prevent
         races between the ``_view`` mutation here and non-append readers
         or writers.  All production call sites in ``LocalConversation``
-        satisfy this — see ``_default_callback``, ``fork``, and
-        ``condense``.
+        satisfy this — see ``_default_callback``, ``fork``,
+        ``condense``, ``run`` (error handler), and ``close``
+        (session-end hooks).
         """
 
         def _sync(event: Event, synced_count: int) -> None:
             if synced_count > 0:
                 # Another writer added events between our last append and
-                # this one. The incremental view has missed those events,
-                # so a full rebuild is the only safe recovery.
-                self._view = View.from_events(self._events)
-            else:
-                self._view.append_event(event)
+                # this one.  Apply only the missed events incrementally
+                # rather than rebuilding the entire view, so the lock
+                # hold stays O(synced_count) instead of O(N).
+                new_len = len(self._events)
+                start = new_len - synced_count - 1
+                for i in range(start, new_len - 1):
+                    self._view.append_event(self._events[i])
+            self._view.append_event(event)
 
         self._events.set_on_append(_sync)
 
@@ -489,6 +493,22 @@ class ConversationState(OpenHandsModel):
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state._wire_view_sync()
+        # Guard against orphaned event files from a previous incomplete
+        # cleanup or crash: base_state.json is missing (fresh path) but
+        # events/ may already contain files.  Without this rebuild the
+        # cached view would start empty while the log is non-empty, and
+        # future appends would never pick up the pre-existing events.
+        # If the orphaned files are corrupted we fall back to an empty
+        # view — they will still surface errors on explicit iteration.
+        if len(state._events) > 0:
+            try:
+                state.rebuild_view()
+            except Exception:
+                logger.warning(
+                    "Failed to rebuild view from orphaned events for "
+                    "conversation %s; starting with empty view",
+                    state.id,
+                )
         state._cipher = cipher
         state.stats = ConversationStats()
 

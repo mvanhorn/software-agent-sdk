@@ -17,6 +17,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Agent
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.persistence_const import EVENT_FILE_PATTERN, EVENTS_DIR
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.io import InMemoryFileStore
@@ -103,6 +104,18 @@ def test_condensation_event_is_applied_incrementally(
     assert state.view.events[0] is msgs[1]
 
 
+def test_condensation_request_sets_flag_incrementally(
+    state: ConversationState,
+) -> None:
+    """CondensationRequest should set the unhandled flag without adding
+    an event to the view (it is not LLMConvertible)."""
+    from openhands.sdk.event.condenser import CondensationRequest
+
+    state.append_event(CondensationRequest())
+    assert state.view.unhandled_condensation_request is True
+    assert len(state.view) == 0
+
+
 def test_append_event_does_not_run_enforce_on_hot_path(
     state: ConversationState, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,17 +196,16 @@ def test_direct_eventlog_append_also_updates_view(
     assert state.view.events[0] is msg
 
 
-def test_view_rebuilds_when_eventlog_syncs_extra_events(
+def test_view_syncs_when_eventlog_syncs_extra_events(
     state: ConversationState,
 ) -> None:
-    """If EventLog reports synced_count > 0, the view must be rebuilt.
+    """If EventLog reports synced_count > 0, the missed events must be
+    incrementally applied to the view before the new event.
 
     We simulate this by writing an event file directly to the in-memory
     file store so that EventLog._sync_from_disk picks it up during the
     next append.
     """
-    from openhands.sdk.conversation.persistence_const import EVENT_FILE_PATTERN
-
     # Manually insert an event file behind EventLog's back, simulating
     # another process having written while this state was alive.
     sneaky_msg = message_event("sneaky")
@@ -203,12 +215,54 @@ def test_view_rebuilds_when_eventlog_syncs_extra_events(
 
     # Now append a second event through the normal path.  EventLog will
     # notice the on-disk file during its lock-and-sync step and report
-    # synced_count=1, which should trigger a full view rebuild.
+    # synced_count=1, which should trigger incremental application of
+    # the missed event followed by the new one.
     second_msg = message_event("second")
     state.append_event(second_msg)
 
-    # Both events should be in the view (rebuilt from the full log).
+    # Both events should be in the view in the correct order.
     assert len(state.view) == 2
-    view_ids = {e.id for e in state.view.events}
-    assert sneaky_msg.id in view_ids
-    assert second_msg.id in view_ids
+    view_ids = [e.id for e in state.view.events]
+    assert view_ids[0] == sneaky_msg.id
+    assert view_ids[1] == second_msg.id
+
+
+def test_fresh_create_rebuilds_view_for_orphaned_events() -> None:
+    """ConversationState.create on a directory that has event files but no
+    base_state.json (crash / partial cleanup) must still populate the
+    cached view from the pre-existing events."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    agent = Agent(llm=llm)
+    workspace = LocalWorkspace(working_dir="/tmp/test")
+
+    # Set up an in-memory file store with orphaned event files but NO
+    # base_state.json, simulating a crash before state was saved.
+    fs = InMemoryFileStore()
+    orphan_msg = message_event("orphan")
+    payload = orphan_msg.model_dump_json(exclude_none=True)
+    path = f"{EVENTS_DIR}/{EVENT_FILE_PATTERN.format(idx=0, event_id=orphan_msg.id)}"
+    fs.write(path, payload)
+
+    state = ConversationState(
+        id=uuid.uuid4(),
+        workspace=workspace,
+        persistence_dir=None,
+        agent=agent,
+    )
+    state._fs = fs
+    state._events = EventLog(fs, dir_path=EVENTS_DIR)
+    state._wire_view_sync()
+
+    # Mimic the fresh-create guard: rebuild if events already exist.
+    if len(state._events) > 0:
+        state.rebuild_view()
+
+    # The orphaned event should be visible in the cached view.
+    assert len(state.view) == 1
+    assert state.view.events[0].id == orphan_msg.id
+
+    # Future appends should still work correctly.
+    new_msg = message_event("new")
+    state.append_event(new_msg)
+    assert len(state.view) == 2
+    assert state.view.events[1].id == new_msg.id

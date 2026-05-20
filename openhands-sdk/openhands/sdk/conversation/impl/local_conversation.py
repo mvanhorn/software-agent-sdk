@@ -390,11 +390,15 @@ class LocalConversation(BaseConversation):
             # callback during the bulk copy: rebuild_view() at the end will
             # derive the view from scratch, so paying n incremental view
             # updates only to discard them is pure overhead.
+            # try/finally ensures the callback is restored even if an
+            # event copy raises.
             fork_conv._state._events.set_on_append(None)
-            for event in self._state.events:
-                fork_conv._state._events.append(event.model_copy(deep=True))
-            fork_conv._state.rebuild_view()
-            fork_conv._state._wire_view_sync()
+            try:
+                for event in self._state.events:
+                    fork_conv._state._events.append(event.model_copy(deep=True))
+            finally:
+                fork_conv._state.rebuild_view()
+                fork_conv._state._wire_view_sync()
 
             # Copy runtime state that accumulated during the source
             # conversation. activated_knowledge_skills is list[str] – strings
@@ -1000,7 +1004,16 @@ class LocalConversation(BaseConversation):
         logger.debug("Closing conversation and cleaning up tool executors")
         hook_processor = getattr(self, "_hook_processor", None)
         if hook_processor is not None:
-            hook_processor.run_session_end()
+            # Session-end hooks emit events through the callback chain,
+            # which reaches _default_callback → append_event → view
+            # mutation.  Hold the state lock so this cannot race with a
+            # concurrent run()/send_message().
+            state = getattr(self, "_state", None)
+            if state is not None:
+                with state:
+                    hook_processor.run_session_end()
+            else:
+                hook_processor.run_session_end()
         try:
             self._end_observability_span()
         except AttributeError:
