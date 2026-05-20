@@ -34,6 +34,7 @@ def _mock_browser_executor_init():
         self._initialized = False
         # Toolset tests never allocate browser resources; keep close() a no-op.
         self._cleanup_initiated = True
+        self._close_lock = threading.Lock()
         self._action_timeout_seconds = 30.0
         self._async_executor = MagicMock()
         self._async_executor.close = MagicMock()
@@ -208,6 +209,7 @@ def test_browser_toolset_does_not_hold_shared_lock_while_constructing():
         self.full_output_save_dir = None
         self._initialized = False
         self._cleanup_initiated = True
+        self._close_lock = threading.Lock()
         self._action_timeout_seconds = 30.0
         self._async_executor = MagicMock()
         self._async_executor.close = MagicMock()
@@ -235,6 +237,7 @@ def test_browser_toolset_initial_create_serializes_candidate_construction():
         self.allowed_domains = kwargs.get("allowed_domains")
         self._initialized = False
         self._cleanup_initiated = True
+        self._close_lock = threading.Lock()
         self._action_timeout_seconds = 30.0
         self._async_executor = MagicMock()
         self._async_executor.close = MagicMock()
@@ -302,6 +305,7 @@ def test_browser_toolset_create_waits_for_shared_executor_close():
         self.full_output_save_dir = kwargs.get("full_output_save_dir")
         self._initialized = False
         self._cleanup_initiated = False
+        self._close_lock = threading.Lock()
         self._action_timeout_seconds = 30.0
         self._async_executor = MagicMock()
         self._async_executor.close = MagicMock()

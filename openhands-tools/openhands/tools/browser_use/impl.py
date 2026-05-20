@@ -351,6 +351,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             **config: Additional configuration options
         """
 
+        self._close_lock = threading.Lock()
+
         def init_logic():
             nonlocal headless
             executable_path = self._ensure_chromium_available()
@@ -401,7 +403,6 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         self._initialized = False
         self._async_executor = AsyncExecutor()
         self._cleanup_initiated = False
-        self._close_lock = threading.Lock()
         self._action_timeout_seconds = action_timeout_seconds
         self._consecutive_failures = 0
 
