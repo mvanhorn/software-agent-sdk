@@ -39,6 +39,12 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
 
         Args:
             view: A view of the history containing all events that should be condensed.
+                **Implementations must treat this view as read-only.** The view may be
+                a cached projection owned by `ConversationState`
+                (see https://github.com/OpenHands/software-agent-sdk/issues/3053), and
+                mutating it in place will corrupt that cache and silently desynchronize
+                the conversation from its event log. Return a new `View` (e.g.
+                `View(events=view.events[k:])`) or a `Condensation` event instead.
             agent_llm: LLM instance used by the agent. Condensers use this for token
                 counting purposes. Defaults to None.
 

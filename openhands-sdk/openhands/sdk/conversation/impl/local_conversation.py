@@ -198,7 +198,11 @@ class LocalConversation(BaseConversation):
             # This callback runs while holding the conversation state's lock
             # (see BaseConversation.compose_callbacks usage inside `with self._state:`
             # regions), so updating state here is thread-safe.
-            self._state.events.append(e)
+            # Using `append_event` (instead of `state.events.append`) also
+            # incrementally updates the cached `state.view`, keeping the view
+            # in sync without paying the O(n) `View.from_events` cost on each
+            # step.
+            self._state.append_event(e)
             # Track user MessageEvent IDs here so hook callbacks (which may
             # synthesize or alter user messages) are captured in one place.
             if isinstance(e, MessageEvent) and e.source == "user":
@@ -383,9 +387,13 @@ class LocalConversation(BaseConversation):
             )
 
             # Deep-copy events from source → fork so the source stays
-            # immutable.
+            # immutable. Use `append_event` so the fork's cached view is
+            # built up incrementally alongside the event log, then call
+            # `rebuild_view` once at the end to run a full enforcement pass
+            # over the freshly-populated log (same posture as cold load).
             for event in self._state.events:
-                fork_conv._state.events.append(event.model_copy(deep=True))
+                fork_conv._state.append_event(event.model_copy(deep=True))
+            fork_conv._state.rebuild_view()
 
             # Copy runtime state that accumulated during the source
             # conversation. activated_knowledge_skills is list[str] – strings

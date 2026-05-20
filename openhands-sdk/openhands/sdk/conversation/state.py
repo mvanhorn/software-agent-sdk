@@ -9,6 +9,7 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -205,6 +206,12 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    # Cached, incrementally-maintained projection of `_events`. Derived state,
+    # so it is intentionally not a model field and never persisted. Updated in
+    # `append_event` on every new event and fully re-derived (with property
+    # enforcement) via `rebuild_view` on cold load, fork, or error recovery.
+    # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+    _view: View = PrivateAttr(default_factory=View)
     _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
@@ -224,6 +231,59 @@ class ConversationState(OpenHandsModel):
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def view(self) -> View:
+        """Cached, incrementally-maintained `View` of the conversation events.
+
+        The view is updated in lockstep with `events` via `append_event`, so it
+        always reflects the current `_events` log without paying the O(n) cost
+        of `View.from_events` on every read. It is fully re-derived (with
+        property enforcement) only by `rebuild_view`, which is intended for
+        cold load, fork, and explicit error recovery — not the per-step hot
+        path.
+
+        Callers must treat the returned view as read-only. Mutating it
+        breaks the cache invariant and will cause silent divergence from
+        `events`.
+        """
+        return self._view
+
+    def append_event(self, event: Event) -> None:
+        """Append an event to the conversation, updating the cached view.
+
+        This is the only sanctioned write path for adding events to a
+        running conversation: it persists the event via `EventLog.append`
+        and incrementally updates the cached `View` so the two stay in
+        sync. Callers (`_default_callback`, fork, etc.) must hold the
+        conversation lock; see callers in `LocalConversation` for the
+        canonical pattern.
+
+        The incremental view update is O(1) for the common
+        `LLMConvertibleEvent` case and O(view-size) only when a
+        `Condensation` event is applied. It does not run
+        `enforce_properties`; that fallback path runs only via
+        `rebuild_view`.
+        """
+        self._events.append(event)
+        self._view.append_event(event)
+
+    def rebuild_view(self) -> None:
+        """Re-derive the cached view from the full event log.
+
+        Runs `View.from_events` over the persisted log, which applies all
+        view property enforcement. This is the fallback path described in
+        `ViewPropertyBase` and should be used only on:
+
+        - Cold load (resuming a persisted `ConversationState`), since the
+          on-disk events may have been written by an older version or
+          could be corrupted.
+        - Fork creation, after deep-copying events from the source state.
+        - Explicit error recovery (e.g., when the LLM rejects the current
+          message history as malformed and we want to re-validate the
+          view before retrying with condensation).
+        """
+        self._view = View.from_events(self._events)
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -354,6 +414,13 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._cipher = cipher
+
+            # Build the cached view from the persisted event log. This is the
+            # one place where we pay the full `View.from_events` cost (which
+            # runs property enforcement) — events may have been written by an
+            # older version of the code or otherwise be in a bad state, so
+            # treating this as a cold-load checkpoint is appropriate.
+            state.rebuild_view()
 
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)
