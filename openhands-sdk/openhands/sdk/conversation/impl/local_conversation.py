@@ -411,15 +411,17 @@ class LocalConversation(BaseConversation):
             # callback during the bulk copy: rebuild_view() at the end will
             # derive the view from scratch, so paying n incremental view
             # updates only to discard them is pure overhead.
-            # try/finally ensures the callback is restored even if an
-            # event copy raises.
+            # Nested try/finally ensures _wire_view_sync() restores the
+            # callback even if rebuild_view() itself raises.
             fork_conv._state._events.set_on_append(None)
             try:
                 for event in self._state.events:
                     fork_conv._state._events.append(event.model_copy(deep=True))
             finally:
-                fork_conv._state.rebuild_view()
-                fork_conv._state._wire_view_sync()
+                try:
+                    fork_conv._state.rebuild_view()
+                finally:
+                    fork_conv._state._wire_view_sync()
 
             # Copy runtime state that accumulated during the source
             # conversation. activated_knowledge_skills is list[str] – strings

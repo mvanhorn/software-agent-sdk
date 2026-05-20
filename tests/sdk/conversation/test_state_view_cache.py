@@ -10,6 +10,7 @@ full `enforce_properties` pass is reserved for explicit `rebuild_view` calls
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import SecretStr
@@ -227,35 +228,36 @@ def test_view_syncs_when_eventlog_syncs_extra_events(
     assert view_ids[1] == second_msg.id
 
 
-def test_fresh_create_rebuilds_view_for_orphaned_events() -> None:
+def test_fresh_create_rebuilds_view_for_orphaned_events(
+    tmp_path: Path,
+) -> None:
     """ConversationState.create on a directory that has event files but no
     base_state.json (crash / partial cleanup) must still populate the
-    cached view from the pre-existing events."""
+    cached view from the pre-existing events.
+
+    Uses the real ``ConversationState.create()`` factory so that any
+    regression in the production orphan-handling guard is caught.
+    """
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm)
     workspace = LocalWorkspace(working_dir="/tmp/test")
 
-    # Set up an in-memory file store with orphaned event files but NO
-    # base_state.json, simulating a crash before state was saved.
-    fs = InMemoryFileStore()
+    # Write an orphaned event file on disk with no base_state.json,
+    # simulating a crash before state was fully saved.
+    events_dir = tmp_path / EVENTS_DIR
+    events_dir.mkdir(parents=True)
     orphan_msg = message_event("orphan")
-    payload = orphan_msg.model_dump_json(exclude_none=True)
-    path = f"{EVENTS_DIR}/{EVENT_FILE_PATTERN.format(idx=0, event_id=orphan_msg.id)}"
-    fs.write(path, payload)
-
-    state = ConversationState(
-        id=uuid.uuid4(),
-        workspace=workspace,
-        persistence_dir=None,
-        agent=agent,
+    event_filename = EVENT_FILE_PATTERN.format(idx=0, event_id=orphan_msg.id)
+    (events_dir / event_filename).write_text(
+        orphan_msg.model_dump_json(exclude_none=True)
     )
-    state._fs = fs
-    state._events = EventLog(fs, dir_path=EVENTS_DIR)
-    state._wire_view_sync()
 
-    # Mimic the fresh-create guard: rebuild if events already exist.
-    if len(state._events) > 0:
-        state.rebuild_view()
+    state = ConversationState.create(
+        id=uuid.uuid4(),
+        agent=agent,
+        workspace=workspace,
+        persistence_dir=str(tmp_path),
+    )
 
     # The orphaned event should be visible in the cached view.
     assert len(state.view) == 1

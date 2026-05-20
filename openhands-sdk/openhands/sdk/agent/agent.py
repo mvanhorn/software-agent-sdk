@@ -776,6 +776,10 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "history: %s",
                     e,
                 )
+                # Re-derive the cached view with full enforce_properties
+                # before the condensation retry — mirrors step(). See
+                # https://github.com/OpenHands/software-agent-sdk/issues/3053.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(

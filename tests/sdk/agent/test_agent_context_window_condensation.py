@@ -58,6 +58,18 @@ class MalformedHistoryRaisingLLM(LLM):
             "immediately after"
         )
 
+    async def acompletion(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        raise LLMMalformedConversationHistoryError(
+            "messages.134: `tool_use` ids were found without `tool_result` blocks "
+            "immediately after"
+        )
+
+    async def aresponses(self, *, messages, tools=None, **kwargs):  # type: ignore[override]
+        raise LLMMalformedConversationHistoryError(
+            "messages.134: `tool_use` ids were found without `tool_result` blocks "
+            "immediately after"
+        )
+
 
 class HandlesRequestsCondenser(CondenserBase):
     def condense(
@@ -148,6 +160,40 @@ def test_agent_rebuilds_view_on_malformed_history_recovery(monkeypatch):
     assert call_count == 1, (
         f"rebuild_view should be called exactly once on malformed-history "
         f"recovery, got {call_count}"
+    )
+
+
+async def test_agent_rebuilds_view_on_malformed_history_recovery_async(
+    monkeypatch,
+):
+    """Async counterpart of the sync rebuild_view test.
+
+    ``astep()`` must also call ``state.rebuild_view()`` before emitting
+    ``CondensationRequest`` on malformed-history recovery. See #3053.
+    """
+    llm = MalformedHistoryRaisingLLM()
+    agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
+    convo = Conversation(agent=agent)
+
+    convo._ensure_agent_ready()
+
+    call_count = 0
+    original_rebuild = type(convo.state).rebuild_view
+
+    def counting_rebuild(self):
+        nonlocal call_count
+        call_count += 1
+        return original_rebuild(self)
+
+    monkeypatch.setattr(type(convo.state), "rebuild_view", counting_rebuild)
+
+    seen: list = []
+    await agent.astep(convo, on_event=seen.append)
+
+    assert any(isinstance(e, CondensationRequest) for e in seen)
+    assert call_count == 1, (
+        f"rebuild_view should be called exactly once on malformed-history "
+        f"recovery (async), got {call_count}"
     )
 
 
