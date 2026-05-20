@@ -88,6 +88,17 @@ class WebhookSpec(BaseModel):
     )
     retry_delay: int = Field(default=5, ge=0, description="The delay between retries")
 
+    # Backpressure parameters
+    max_queue_size: int = Field(
+        default=1000,
+        ge=1,
+        description=(
+            "Upper bound on the number of events buffered for delivery. When the "
+            "downstream is failing and events are re-queued for retry, the oldest "
+            "events are dropped past this bound to prevent unbounded memory growth."
+        ),
+    )
+
 
 class Config(BaseModel):
     """
@@ -162,6 +173,15 @@ class Config(BaseModel):
     preload_tools: bool = Field(
         default=True,
         description="Whether to preload tools",
+    )
+    max_concurrent_runs: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Maximum number of conversations that can execute agent steps "
+            "concurrently.  Controls the size of the dedicated thread pool "
+            "used for conversation.run() calls."
+        ),
     )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,

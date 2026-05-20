@@ -102,6 +102,8 @@ When reviewing code, provide constructive feedback:
 </ROLE>
 
 ## Repository Memory
+- Async LLM completions propagate through the full call chain: `LLM.acompletion()`/`LLM.aresponses()` → `_atransport_call()` (litellm `acompletion`/`aresponses`) → `RetryMixin.async_retry()` (tenacity `AsyncRetrying`) → condenser `acondense()` → `Agent.astep()` → `LocalConversation.arun()` → `EventService.run()`. Every async method has a sync counterpart; base classes provide default delegations to sync so custom subclasses work without changes. Token callbacks use `AnyTokenCallbackType` (union of sync/async) with `_invoke_token_callback()` for transparent dispatch.
+- `conversation.interrupt()` cancels in-flight `arun()` by cancelling the tracked `_arun_task`. `asyncio.CancelledError` propagates through all layers (LLM HTTP stream → agent step → conversation loop) without needing per-layer interrupt APIs, because LLM and Agent are frozen/stateless Pydantic models that may be shared across conversations. `arun()` catches `CancelledError`, sets status to `PAUSED`, and emits `InterruptEvent`. The agent-server exposes this via `EventService.interrupt()` → `ConversationService.interrupt_conversation()` → `POST /{conversation_id}/interrupt`.
 - Programmatic settings live in `openhands-sdk/openhands/sdk/settings/`. Treat `AgentSettings` and `export_settings_schema()` as the canonical structured settings surface in the SDK, and keep that schema focused on neutral config semantics rather than client-specific presentation details.
 - `SettingsFieldSchema` intentionally does not export a `required` flag. If a consumer needs nullability semantics, inspect the underlying Python typing rather than inferring from SDK defaults.
 - `AgentSettings.tools` is part of the exported settings schema so the schema stays aligned with the settings payload that round-trips through `AgentSettings` and drives `create_agent()`.
@@ -114,9 +116,17 @@ When reviewing code, provide constructive feedback:
 - AgentSkills progressive disclosure goes through `AgentContext.get_system_message_suffix()` into `<available_skills>`, and `openhands.sdk.context.skills.to_prompt()` truncates each prompt description to 1024 characters because the AgentSkills specification caps `description` at 1-1024 characters.
 - Workspace-wide uv resolver guardrails belong in the repository root `[tool.uv]` table. When `exclude-newer` is configured there, `uv lock` persists it into the root `uv.lock` `[options]` section as both an absolute cutoff and `exclude-newer-span`, and `uv sync --frozen` continues to use that locked workspace state.
 - `pr-review-by-openhands` delegates to `OpenHands/extensions/plugins/pr-review@main`. Repo-specific reviewer instructions live in `.agents/skills/custom-codereview-guide.md`, and because task-trigger matching is substring-based, that `/codereview` skill is also auto-injected for the workflow's `/codereview-roasted` prompt.
+- Release PR reviewer guidance now requires checking the latest PR-specific `Run tests`, `Run Examples Scripts`, and `Run Integration Tests` results/comments before approval; if any are missing, stale, ambiguous, skipped, or failing, the bot should leave a COMMENT and defer to human maintainer review.
+- Directory-based runnable examples under `examples/` should expose their entrypoint as `main.py`, and `tests/examples/test_examples.py` should explicitly list the example directory in `_TARGET_DIRECTORIES` so the non-recursive example workflow collects it without accidentally running helper modules.
 - The duplicate-issue automation scripts should validate `owner/repo` arguments before interpolating GitHub API paths, handle per-issue auto-close failures without aborting the whole batch, and keep `app_conversation_id` paths unquoted because OpenHands conversation IDs are already canonicalized for those endpoints.
+
 - `agent-server` now defaults `TMUX_TMPDIR` to a per-process directory under the system temp dir (`openhands-agent-server-<pid>`) when the environment variable is unset. This isolates tmux sockets/cleanup across concurrent server instances while still respecting an explicit `TMUX_TMPDIR` override.
+- Conversation worktrees for git-backed local workspaces live under `/tmp/conversation-worktrees/<conversation_id>/<repo_root.name>`, and if the original workspace points at a subdirectory inside the repo, the active workspace should preserve that relative path inside the worktree.
+
 - Agent-server Docker publish tags are defined centrally in `openhands-agent-server/openhands/agent_server/docker/build.py`; keep `server.yml` manifest publication derived from the emitted per-arch tags so SHA/branch/git-tag aliases stay in sync, while preserving the legacy `latest-<variant>` alias used by workspace defaults.
+- The published agent-server Docker images in `.github/workflows/server.yml` must pass `OPENHANDS_BUILD_GIT_SHA` and `OPENHANDS_BUILD_GIT_REF` as explicit `docker/build-push-action` build args; the workflow only uses `docker/build.py` for context/tag generation, so those runtime env vars are otherwise left at the Dockerfile `unknown` defaults.
+- The PyInstaller agent-server binary should copy OpenHands distribution metadata (`openhands-agent-server`, `openhands-sdk`, `openhands-tools`, `openhands-workspace`) in `agent-server.spec`, otherwise `/server_info` version lookups via `importlib.metadata` can fall back to `unknown` inside published binary images.
+
 
 - Auto-title generation should not re-read `ConversationState.events` from a background task triggered by a freshly received `MessageEvent`; extract message text synchronously from the incoming event and then reuse shared title helpers (`extract_message_text`, `generate_title_from_message`) to avoid persistence-order races.
 - `RemoteConversation.generate_title()` now reconciles remote events and reuses the shared local `generate_conversation_title(...)` helper instead of calling the removed deprecated agent-server `/generate_title` REST route, so explicit remote title generation still works without a transport-only compatibility endpoint.
@@ -126,6 +136,8 @@ When reviewing code, provide constructive feedback:
 - Keep path helpers split by purpose: `is_absolute_path_source()` is for cross-platform source/wire syntax detection, while local filesystem writes/validation (for example, the file editor) should use host-native absolute-path semantics so POSIX does not silently accept Windows drive paths as creatable files.
 - Tool availability filtering belongs in `openhands-sdk/openhands/sdk/tool/registry.py` via `list_usable_tools()`, which preserves registration order and defaults tools to usable unless they expose an `is_usable()` callable. Environment-specific checks like Chromium detection should live on the concrete tool class (`BrowserToolSet.is_usable()`), while agent-server surfaces such as `/server_info` should consume the registry helper rather than re-implement per-tool filtering.
 - Pydantic secret field helpers live in `openhands-sdk/openhands/sdk/utils/pydantic_secrets.py`. `serialize_secret()` handles serialization (cipher / `expose_secrets` / default Pydantic masking); `validate_secret()` handles deserialization (cipher decryption, redacted/empty → `None`); `is_redacted_secret()` checks for the sentinel; `REDACTED_SECRET_VALUE` is the canonical sentinel string. For `dict[str, str]` fields whose values are all secrets, wrap each value in `SecretStr` and call `serialize_secret` per value (see `LookupSecret._serialize_secrets` and `ACPAgent._serialize_acp_env`). Do not hand-roll redaction logic in field serializers.
+
+- `LookupSecret` normalizes hostless URLs against `OH_INTERNAL_SERVER_URL` (set by `openhands-agent-server.__main__` from the bound host/port, rewriting wildcard binds to loopback) and otherwise falls back to `http://127.0.0.1:8000`, so relative secret URLs can safely target the current agent-server instance.
 
 
 
@@ -153,6 +165,8 @@ consult each relevant package-level AGENTS.md.
   Pydantic `Field(...)` declarations as non-breaking, including adding,
   removing, or editing `description`, `title`, `examples`,
   `json_schema_extra`, and `deprecated` kwargs.
+- Public SDK `Field(default=...)` changes are treated separately from removals/structural API breakages: the API breakage workflow should surface them as behavioral compatibility changes, auto-apply the green `release-note-required` label on PRs, and the release workflow should prepend those labeled PRs to generated GitHub release notes.
+
 - The SDK API breakage checker compares stringified `Field(...)` values by
   parsing them as Python expressions after escaping literal newlines inside
   quoted strings; this avoids false positives on multiline descriptions that
@@ -313,6 +327,10 @@ gh run rerun <RUN_ID> --repo <OWNER>/<REPO> --failed
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
 - For changes to prompt templates, tool descriptions, or agent decision logic, add the `integration-test` label to trigger integration tests and verify no unexpected impact on benchmark performance.
 
+# Stress Tests
+
+`tests/agent_server/stress/` contains an opt-in stress/scale suite for the agent-server, excluded from default collection via the `stress` pytest marker. Run with `uv run pytest -m stress`. For full details on running, infrastructure, and adding new stress tests, see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md).
+
 # Behavior Tests
 
 Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to verify that agents exhibit desired behaviors in realistic scenarios. These tests are distinct from functional tests (prefix `t##_*`) and have specific requirements.
@@ -346,6 +364,7 @@ Note: This is separate from `persistence_dir` which is used for conversation sta
 - Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
 - Lint/format: `make lint`, `make format`
 - Run tests: `uv run pytest`
+- Run agent-server stress tests: `uv run pytest -m stress` (see [openhands-agent-server/AGENTS.md](openhands-agent-server/AGENTS.md))
 - Build agent-server: `make build-server` (output: `dist/agent-server/`)
 - Clean caches: `make clean`
 - Run SDK examples: see [openhands-sdk/openhands/sdk/AGENTS.md](openhands-sdk/openhands/sdk/AGENTS.md).

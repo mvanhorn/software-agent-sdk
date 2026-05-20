@@ -1,14 +1,19 @@
 import asyncio
+import contextlib
 import shutil
 import threading
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
@@ -34,6 +39,11 @@ from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalAction, TerminalObservation
+from tests.agent_server.stress.scripts import (
+    SlowTestLLM,
+    start_conversation_with_test_llm,
+    text_message,
+)
 
 
 @pytest.fixture
@@ -310,6 +320,84 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 0
         # Should still have next_page_id if there are events available
         assert result.next_page_id is not None
+
+    @pytest.mark.asyncio
+    async def test_search_events_does_not_scan_whole_log(self, event_service):
+        """Loading the most recent N events must be O(limit), not O(total).
+
+        Regression test for a previous implementation that read every event
+        from the EventLog before returning a single page, making long
+        conversations effectively unusable.
+        """
+
+        class _CountingEvents:
+            """Sequence wrapper that counts ``__getitem__`` accesses."""
+
+            def __init__(self, items: list[Event]):
+                self._items = items
+                self.getitem_calls = 0
+                # ``get_index`` is what EventLog exposes; mirroring it lets us
+                # verify the O(1) page_id lookup path is exercised.
+                self._id_to_idx = {e.id: i for i, e in enumerate(items)}
+
+            def __len__(self) -> int:
+                return len(self._items)
+
+            def __getitem__(self, idx: int) -> Event:
+                self.getitem_calls += 1
+                return self._items[idx]
+
+            def __iter__(self):  # pragma: no cover - must NOT be used in fast path
+                raise AssertionError(
+                    "search_events fell back to full iteration; expected "
+                    "index-based access only"
+                )
+
+            def get_index(self, event_id: str) -> int:
+                return self._id_to_idx[event_id]
+
+        total = 1000
+        events = [
+            MessageEvent(
+                id=f"event{i:05d}",
+                source="user",
+                llm_message=Message(role="user"),
+            )
+            for i in range(total)
+        ]
+        wrapper = _CountingEvents(cast(list[Event], events))
+
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.events = wrapper
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        # First page: 50 most recent events out of 1000.
+        result = await event_service.search_events(
+            limit=50, sort_order=EventSortOrder.TIMESTAMP_DESC
+        )
+        assert len(result.items) == 50
+        assert result.items[0].id == events[-1].id
+        assert result.items[-1].id == events[-50].id
+        assert result.next_page_id == events[-51].id
+        # Must read at most limit + 1 events (one extra for next_page_id).
+        assert wrapper.getitem_calls <= 51, (
+            f"Expected <=51 getitem calls, got {wrapper.getitem_calls}"
+        )
+
+        # Second page via page_id: also O(limit) and uses get_index (no scan).
+        wrapper.getitem_calls = 0
+        next_page = await event_service.search_events(
+            page_id=result.next_page_id,
+            limit=50,
+            sort_order=EventSortOrder.TIMESTAMP_DESC,
+        )
+        assert len(next_page.items) == 50
+        assert next_page.items[0].id == events[-51].id
+        assert wrapper.getitem_calls <= 51
 
     @pytest.mark.asyncio
     async def test_search_events_exact_pagination_boundary(self, event_service):
@@ -688,17 +776,23 @@ class TestEventServiceSendMessage:
         conversation.run = MagicMock()
 
         event_service._conversation = conversation
-        event_service._get_execution_status = AsyncMock(
-            return_value=ConversationExecutionStatus.RUNNING
-        )
+        # Simulate conversation already running to test the ValueError path
+        event_service._run_task = asyncio.create_task(asyncio.sleep(10))
         message = Message(role="user", content=[])
 
-        # Call send_message with run=True
+        # Call send_message with run=True — should silently skip run
         await event_service.send_message(message, run=True)
 
         conversation.send_message.assert_called_once_with(message)
-        event_service._get_execution_status.assert_awaited_once()
+        # run() delegates to self.run() which checks status under lock
+        # and raises ValueError (caught by send_message) — so
+        # conversation.run is never invoked.
         conversation.run.assert_not_called()
+
+        # Clean up the simulated running task
+        event_service._run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await event_service._run_task
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_idle(self, event_service):
@@ -715,6 +809,7 @@ class TestEventServiceSendMessage:
         conversation.run = MagicMock()
 
         event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
         message = Message(role="user", content=[])
 
         # Call send_message with run=True
@@ -723,12 +818,9 @@ class TestEventServiceSendMessage:
         # Verify send_message was called
         conversation.send_message.assert_called_once_with(message)
 
-        # Wait for the background task to call run with a timeout
-        async def wait_for_run_called():
-            while not conversation.run.called:
-                await asyncio.sleep(0.001)
-
-        await asyncio.wait_for(wait_for_run_called(), timeout=1.0)
+        # send_message delegates to self.run() which creates a background task
+        assert event_service._run_task is not None
+        await event_service._run_task
 
         # Verify run was called since agent was idle
         conversation.run.assert_called_once()
@@ -748,6 +840,7 @@ class TestEventServiceSendMessage:
         conversation.run = MagicMock(side_effect=RuntimeError("Test error"))
 
         event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
         message = Message(role="user", content=[])
 
         # Patch the logger to verify exception logging
@@ -755,16 +848,14 @@ class TestEventServiceSendMessage:
             # Call send_message with run=True
             await event_service.send_message(message, run=True)
 
-            # Wait for the background task to complete with a timeout
-            async def wait_for_exception_logged():
-                while not mock_logger.exception.called:
-                    await asyncio.sleep(0.001)
-
-            await asyncio.wait_for(wait_for_exception_logged(), timeout=1.0)
+            # Wait for the background task to complete
+            assert event_service._run_task is not None
+            await event_service._run_task
 
             # Verify the exception was logged via logger.exception()
+            # (logged by run()'s _run_and_publish handler)
             mock_logger.exception.assert_called_once_with(
-                "Error during conversation run from send_message"
+                "Error during conversation run"
             )
 
         # Verify send_message was still called
@@ -2011,12 +2102,212 @@ class TestEventServiceClose:
                 await event_service.close()
         finally:
             hanging_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError, BaseException):
                 await hanging_task
-            except (asyncio.CancelledError, BaseException):
-                pass
 
         conversation.pause.assert_called_once()
         assert "did not exit cleanly" in caplog.text
         assert event_service._run_task is None
         conversation.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_uses_executor_for_sync_only_conversation(self, event_service):
+        """EventService.run() must use the thread-pool executor when the
+        conversation only inherits the default BaseConversation.arun()
+        (which delegates to sync run()).  This prevents sync-only
+        subclasses from accidentally blocking the event loop."""
+        from openhands.sdk.conversation.base import BaseConversation
+
+        run_thread_id: int | None = None
+        mock = MagicMock()
+
+        # Concrete subclass that never overrides arun(); all abstract
+        # methods are filled by a MagicMock delegate so we only test
+        # the dispatch logic.
+        class SyncOnlyConversation(BaseConversation):
+            """Minimal subclass that only implements sync run()."""
+
+            @property
+            def id(self):
+                return mock.id
+
+            @property
+            def state(self):
+                return mock.state
+
+            @property
+            def conversation_stats(self):
+                return mock.conversation_stats
+
+            def send_message(self, message, sender=None):
+                pass
+
+            def run(self):
+                nonlocal run_thread_id
+                run_thread_id = threading.current_thread().ident
+
+            def pause(self):
+                pass
+
+            def close(self):
+                pass
+
+            def set_confirmation_policy(self, policy):
+                pass
+
+            def set_security_analyzer(self, analyzer):
+                pass
+
+            def update_secrets(self, secrets):
+                pass
+
+            def reject_pending_actions(self, reason=""):
+                pass
+
+            def interrupt(self):
+                pass
+
+            def generate_title(self, llm=None, max_length=50):
+                return ""
+
+            def ask_agent(self, question):
+                return ""
+
+            def condense(self):
+                pass
+
+            def execute_tool(self, tool_name, action):
+                return mock.execute_tool(tool_name, action)
+
+            def fork(self, **kwargs):
+                return mock.fork(**kwargs)
+
+        conv = SyncOnlyConversation()
+        event_service._conversation = conv  # type: ignore[assignment]
+
+        # Sanity: this conversation does NOT override arun()
+        assert type(conv).arun is BaseConversation.arun
+
+        # Bypass guards that access internal _state (not part of the
+        # abstract interface) so we only test the dispatch logic.
+        with (
+            patch.object(
+                type(event_service),
+                "_get_execution_status",
+                new_callable=AsyncMock,
+                return_value=ConversationExecutionStatus.PAUSED,
+            ),
+            patch.object(
+                type(event_service),
+                "_publish_state_update",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await event_service.run()
+            # Give the background task a moment to execute
+            await asyncio.sleep(0.3)
+
+        event_loop_thread = threading.current_thread().ident
+        assert run_thread_id is not None, "run() was never called"
+        assert run_thread_id != event_loop_thread, (
+            "run() executed on the event loop thread — expected thread-pool"
+        )
+
+
+@pytest_asyncio.fixture
+async def real_conversation_service(tmp_path):
+    persist = tmp_path / "persist"
+    persist.mkdir()
+    service = ConversationService(conversations_dir=persist)
+    async with service:
+        yield service
+
+
+class _WedgedSubscriber:
+    """Models a WS client whose TCP send buffer is full."""
+
+    def __init__(self) -> None:
+        self.unblock = asyncio.Event()
+
+    async def __call__(self, event):
+        await self.unblock.wait()
+
+    async def close(self) -> None:
+        self.unblock.set()  # let PubSub.close() finish
+
+
+@pytest.mark.timeout(15)
+async def test_subscribe_to_events_does_not_deadlock_on_wedged_subscriber(
+    real_conversation_service, tmp_path
+):
+    (tmp_path / "ws").mkdir()
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=SlowTestLLM.from_messages([text_message("ok")], latency_s=0.0),
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="wedged-sub",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None
+
+    wedged = _WedgedSubscriber()
+    try:
+        await asyncio.wait_for(es.subscribe_to_events(wedged), timeout=1.0)
+    except TimeoutError:
+        pytest.fail("subscribe_to_events blocked > 1 s on a wedged subscriber.")
+    finally:
+        wedged.unblock.set()
+
+
+@pytest.mark.timeout(45)
+async def test_close_blocks_until_executor_thread_finishes(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    # close() cancels the _run_task then waits for it to settle.  With the
+    # native arun() path the task handles CancelledError and transitions to
+    # PAUSED quickly.  We verify close() returns promptly (the cancellation
+    # machinery works) and that the task is properly cleaned up.
+    (tmp_path / "ws").mkdir()
+    parent_llm = SlowTestLLM.from_messages(
+        [text_message("done")],
+        latency_s=12.0,  # > the 10 s wait_for in close()
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="close-race",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None
+
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="long step")]),
+        run=False,
+    )
+    await es.run()
+    await asyncio.sleep(0.5)
+
+    def _broken():
+        raise RuntimeError("pause/close unavailable")
+
+    conv = es.get_conversation()
+    monkeypatch.setattr(conv, "pause", _broken)
+    monkeypatch.setattr(conv, "close", _broken)
+
+    close_start = time.monotonic()
+    with contextlib.suppress(Exception):
+        await es.close()
+    close_elapsed = time.monotonic() - close_start
+
+    # close() should return well before the 12 s LLM latency because
+    # it cancels the arun() task, which handles CancelledError and
+    # transitions to PAUSED.  Allow a generous margin for CI but ensure
+    # it did not block the full 12 s.
+    assert close_elapsed < 11.0, (
+        f"close() took {close_elapsed:.1f}s — expected fast cancellation"
+    )
+
+    monkeypatch.undo()
