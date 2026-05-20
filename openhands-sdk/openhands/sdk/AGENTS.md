@@ -29,8 +29,8 @@ When changing a persisted settings model (for example `AgentSettings`, `Conversa
 
 1. Bump the relevant `schema_version` constant when the persisted JSON shape changes incompatibly.
 2. Add the corresponding `_migrate_*_vN_to_vN+1` function and register it in the appropriate migrations table.
-3. Add or update a golden fixture under `tests/sdk/persisted_settings_baselines/vN/` covering the historical payload shape.
-4. Run `.github/scripts/check_persisted_settings_compat.py` (or the `Persisted settings compatibility checks` workflow) to verify both the golden fixtures and the latest published PyPI baseline still load through `from_persisted()`.
+3. Add or update a golden fixture under `tests/sdk/persisted_settings_baselines/vN/` covering the historical payload shape. If the fixture relies on sentinel values surviving migration, record them in the fixture's top-level `__expected__` dotted-path map so the checker catches silent data loss.
+4. Run `.github/scripts/check_persisted_settings_compat.py` (or the `Persisted settings compatibility checks` workflow) to verify both the golden fixtures and the latest published PyPI baseline still load through `from_persisted()`. The PyPI baseline environment is installed with `uv` using the baseline release upload timestamp as an `exclude-newer` cutoff.
 
 
 ## Testing Guidelines

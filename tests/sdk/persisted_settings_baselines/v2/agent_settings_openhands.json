@@ -1,4 +1,19 @@
 {
+  "__expected__": {
+    "agent_kind": "openhands",
+    "llm.model": "fixture-v2-llm",
+    "tools": [
+      {
+        "name": "TerminalTool",
+        "params": {}
+      },
+      {
+        "name": "FileEditorTool",
+        "params": {}
+      }
+    ],
+    "verification.critic_enabled": true
+  },
   "schema_version": 2,
   "agent_kind": "openhands",
   "llm": {

@@ -35,6 +35,24 @@ get_pypi_baseline_version = _prod.get_pypi_baseline_version
 validate_fixture_cases = _prod.validate_fixture_cases
 
 
+def _mock_pypi_releases(monkeypatch, releases: dict[str, list[dict[str, str]]]) -> None:
+    payload = {"releases": releases}
+
+    class _DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr(
+        _prod.urllib.request, "urlopen", lambda *_args, **_kwargs: _DummyResponse()
+    )
+
+
 def test_collect_fixture_cases_and_validate_current_repo_fixtures() -> None:
     cases = collect_fixture_cases()
 
@@ -98,6 +116,7 @@ def test_validate_fixture_cases_surfaces_loader_guidance_on_failure() -> None:
             "confirmation_mode": True,
             "security_analyzer": "llm",
         },
+        expected_paths={},
     )
 
     with pytest.raises(
@@ -110,40 +129,124 @@ def test_validate_fixture_cases_surfaces_loader_guidance_on_failure() -> None:
         )
 
 
+def test_validate_fixture_cases_checks_expected_sentinel_values() -> None:
+    bad_case = FixtureCase(
+        path=Path(
+            "tests/sdk/persisted_settings_baselines/v1/conversation_settings.json"
+        ),
+        surface_key="conversation_settings",
+        version=1,
+        payload={
+            "schema_version": 1,
+            "max_iterations": 321,
+            "confirmation_mode": True,
+            "security_analyzer": "llm",
+        },
+        expected_paths={"max_iterations": 999},
+    )
+
+    with pytest.raises(
+        PersistedSettingsCompatError,
+        match="changed expected field 'max_iterations'",
+    ):
+        validate_fixture_cases(
+            [bad_case],
+            surfaces={"conversation_settings": SURFACES["conversation_settings"]},
+        )
+
+
 def test_get_pypi_baseline_version_prefers_current_or_previous(monkeypatch) -> None:
-    payload = {"releases": {"1.0.0": [], "1.1.0": []}}
-
-    class _DummyResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(payload).encode()
-
-    monkeypatch.setattr(
-        _prod.urllib.request, "urlopen", lambda *_args, **_kwargs: _DummyResponse()
+    _mock_pypi_releases(
+        monkeypatch,
+        {
+            "1.0.0": [{"upload_time_iso_8601": "2026-01-01T00:00:00Z"}],
+            "1.1.0": [{"upload_time_iso_8601": "2026-01-02T00:00:00Z"}],
+        },
     )
 
     assert get_pypi_baseline_version("openhands-sdk", "1.1.0") == "1.1.0"
     assert get_pypi_baseline_version("openhands-sdk", "1.2.0") == "1.1.0"
 
 
+def test_get_pypi_baseline_version_raises_on_metadata_failure(monkeypatch) -> None:
+    def _raise_url_error(*_args, **_kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(_prod.urllib.request, "urlopen", _raise_url_error)
+
+    with pytest.raises(
+        PersistedSettingsCompatError,
+        match="Failed to fetch PyPI metadata for openhands-sdk",
+    ):
+        get_pypi_baseline_version("openhands-sdk", "1.2.0")
+
+
+def test_generate_baseline_payloads_uses_uv_with_release_cutoff(monkeypatch) -> None:
+    monkeypatch.setattr(_prod, "_venv_python", lambda _path: Path("/tmp/fake-python"))
+    calls: list[list[str]] = []
+
+    def _fake_uv_run(args: list[str]):
+        calls.append(args)
+        if args[:2] == ["uv", "venv"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ["uv", "pip", "install"]:
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        assert args[0] == "/tmp/fake-python"
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(
+                [
+                    {
+                        "key": "conversation_settings/default",
+                        "payload": {
+                            "schema_version": 1,
+                            "max_iterations": 500,
+                            "confirmation_mode": False,
+                            "security_analyzer": "llm",
+                        },
+                    }
+                ]
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(_prod, "_uv_run", _fake_uv_run)
+
+    cases = _prod.generate_baseline_payloads(
+        sdk_version="1.2.3",
+        agent_server_version="1.2.3",
+        exclude_newer="2026-01-02T00:00:00Z",
+    )
+
+    assert [case.key for case in cases] == ["conversation_settings/default"]
+    assert calls[0][:2] == ["uv", "venv"]
+    assert calls[1] == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "/tmp/fake-python",
+        "--quiet",
+        "--exclude-newer",
+        "2026-01-02T00:00:00Z",
+        "openhands-sdk==1.2.3",
+        "openhands-agent-server==1.2.3",
+    ]
+
+
 def test_generate_baseline_payloads_raises_on_generation_failure(monkeypatch) -> None:
-    monkeypatch.setattr(_prod.venv.EnvBuilder, "create", lambda self, _path: None)
     monkeypatch.setattr(_prod, "_venv_python", lambda _path: Path("/tmp/fake-python"))
 
-    def _raise_called_process_error(*_args, **_kwargs):
+    def _raise_called_process_error(_args: list[str]):
         raise subprocess.CalledProcessError(
             1,
-            ["python", "-m", "pip", "install"],
+            ["uv", "pip", "install"],
             output="stdout",
             stderr="stderr",
         )
 
-    monkeypatch.setattr(_prod.subprocess, "run", _raise_called_process_error)
+    monkeypatch.setattr(_prod, "_uv_run", _raise_called_process_error)
 
     with pytest.raises(
         PersistedSettingsCompatError,
@@ -152,4 +255,5 @@ def test_generate_baseline_payloads_raises_on_generation_failure(monkeypatch) ->
         _prod.generate_baseline_payloads(
             sdk_version="1.2.3",
             agent_server_version="1.2.3",
+            exclude_newer="2026-01-02T00:00:00Z",
         )

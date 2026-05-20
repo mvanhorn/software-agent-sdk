@@ -28,7 +28,6 @@ import sys
 import tempfile
 import tomllib
 import urllib.request
-import venv
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -53,6 +52,7 @@ from openhands.sdk.settings import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = REPO_ROOT / "tests" / "sdk" / "persisted_settings_baselines"
 _FIXTURE_DIR_RE = re.compile(r"v(?P<version>[1-9][0-9]*)$")
+_FIXTURE_EXPECTED_KEY = "__expected__"
 _FIXTURE_SURFACE_PREFIXES = {
     "agent_settings": "agent_settings",
     "conversation_settings": "conversation_settings",
@@ -217,6 +217,7 @@ class FixtureCase:
     surface_key: str
     version: int
     payload: dict[str, Any]
+    expected_paths: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,7 +283,7 @@ def _parse_version(value: str) -> pkg_version.Version:
     return pkg_version.parse(value)
 
 
-def get_pypi_baseline_version(distribution: str, current: str) -> str | None:
+def _fetch_pypi_project_metadata(distribution: str) -> dict[str, Any]:
     req = urllib.request.Request(
         url=f"https://pypi.org/pypi/{distribution}/json",
         headers={"User-Agent": _PYPI_USER_AGENT},
@@ -292,26 +293,65 @@ def get_pypi_baseline_version(distribution: str, current: str) -> str | None:
         with urllib.request.urlopen(req, timeout=10) as response:
             meta = json.load(response)
     except Exception as exc:
-        print(
-            f"::warning title={distribution} persisted settings::Failed to fetch "
-            f"PyPI metadata: {exc}"
+        raise PersistedSettingsCompatError(
+            f"Failed to fetch PyPI metadata for {distribution}: {exc}"
+        ) from exc
+    if not isinstance(meta, dict):
+        raise PersistedSettingsCompatError(
+            f"Invalid PyPI metadata payload for {distribution}: {type(meta).__name__}"
         )
+    return meta
+
+
+def get_pypi_baseline_version(distribution: str, current: str) -> str | None:
+    meta = _fetch_pypi_project_metadata(distribution)
+    releases = meta.get("releases")
+    if not isinstance(releases, dict):
+        raise PersistedSettingsCompatError(
+            f"PyPI metadata for {distribution} did not include a releases mapping."
+        )
+    release_versions = list(releases.keys())
+    if not release_versions:
         return None
 
-    releases = list(meta.get("releases", {}).keys())
-    if not releases:
-        return None
-
-    if current in releases:
+    if current in release_versions:
         return current
 
     current_parsed = _parse_version(current)
     older = [
-        release for release in releases if _parse_version(release) < current_parsed
+        release
+        for release in release_versions
+        if _parse_version(release) < current_parsed
     ]
     if not older:
         return None
     return max(older, key=_parse_version)
+
+
+def get_pypi_release_cutoff(distribution: str, release_version: str) -> str:
+    meta = _fetch_pypi_project_metadata(distribution)
+    releases = meta.get("releases")
+    if not isinstance(releases, dict):
+        raise PersistedSettingsCompatError(
+            f"PyPI metadata for {distribution} did not include a releases mapping."
+        )
+    files = releases.get(release_version)
+    if not isinstance(files, list) or not files:
+        raise PersistedSettingsCompatError(
+            f"PyPI metadata for {distribution} had no files for {release_version}."
+        )
+    upload_times = [
+        file_info.get("upload_time_iso_8601")
+        for file_info in files
+        if isinstance(file_info, dict)
+    ]
+    valid_upload_times = [value for value in upload_times if isinstance(value, str)]
+    if not valid_upload_times:
+        raise PersistedSettingsCompatError(
+            f"PyPI metadata for {distribution} had no upload_time_iso_8601 values "
+            f"for {release_version}."
+        )
+    return max(valid_upload_times)
 
 
 def _surface_key_for_name(name: str) -> str:
@@ -370,11 +410,18 @@ def collect_fixture_cases(root: Path = FIXTURE_ROOT) -> list[FixtureCase]:
             )
         directory_version = int(match.group("version"))
         for fixture_path in sorted(version_dir.glob("*.json")):
-            payload = json.loads(fixture_path.read_text())
-            if not isinstance(payload, dict):
+            raw_fixture = json.loads(fixture_path.read_text())
+            if not isinstance(raw_fixture, dict):
                 raise PersistedSettingsCompatError(
                     f"Fixture {fixture_path} must contain a JSON object."
                 )
+            expected_paths_raw = raw_fixture.pop(_FIXTURE_EXPECTED_KEY, {})
+            if not isinstance(expected_paths_raw, dict):
+                raise PersistedSettingsCompatError(
+                    f"Fixture {fixture_path} {_FIXTURE_EXPECTED_KEY} must be an object."
+                )
+            expected_paths = dict(expected_paths_raw)
+            payload = raw_fixture
             surface_key = _surface_key_for_name(fixture_path.stem)
             payload_version = payload.get("schema_version")
             if not isinstance(payload_version, int) or isinstance(
@@ -394,6 +441,7 @@ def collect_fixture_cases(root: Path = FIXTURE_ROOT) -> list[FixtureCase]:
                     surface_key=surface_key,
                     version=payload_version,
                     payload=payload,
+                    expected_paths=expected_paths,
                 )
             )
     if not cases:
@@ -428,6 +476,7 @@ def validate_fixture_cases(
             payload=case.payload,
             surface=surface,
             origin=f"fixture {_display_path(case.path)}",
+            expected_paths=case.expected_paths,
         )
         seen_versions[surface.key].add(case.version)
 
@@ -444,11 +493,39 @@ def validate_fixture_cases(
             )
 
 
+def _get_nested_value(payload: Mapping[str, Any], dotted_path: str) -> Any:
+    current: Any = payload
+    for segment in dotted_path.split("."):
+        if not isinstance(current, Mapping) or segment not in current:
+            raise PersistedSettingsCompatError(
+                f"Missing expected persisted field {dotted_path!r}."
+            )
+        current = current[segment]
+    return current
+
+
+def _assert_expected_paths(
+    *,
+    payload: Mapping[str, Any],
+    expected_paths: Mapping[str, Any],
+    origin: str,
+    surface: SurfaceConfig,
+) -> None:
+    for dotted_path, expected_value in expected_paths.items():
+        actual_value = _get_nested_value(payload, dotted_path)
+        if actual_value != expected_value:
+            raise PersistedSettingsCompatError(
+                f"{surface.display_name} payload from {origin} changed expected field "
+                f"{dotted_path!r}: expected {expected_value!r}, got {actual_value!r}."
+            )
+
+
 def _validate_single_payload(
     *,
     payload: Mapping[str, Any],
     surface: SurfaceConfig,
     origin: str,
+    expected_paths: Mapping[str, Any] | None = None,
 ) -> None:
     raw_payload = _copy_payload(payload)
     raw_version = raw_payload.get("schema_version")
@@ -474,6 +551,13 @@ def _validate_single_payload(
         raise PersistedSettingsCompatError(
             f"{surface.display_name} payload from {origin} round-tripped with "
             f"schema_version {roundtrip_version}, expected {surface.current_version}."
+        )
+    if expected_paths:
+        _assert_expected_paths(
+            payload=roundtrip,
+            expected_paths=expected_paths,
+            origin=origin,
+            surface=surface,
         )
 
     try:
@@ -504,48 +588,46 @@ def _venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
+def _uv_run(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, check=True, capture_output=True, text=True)
+
+
 def generate_baseline_payloads(
     *,
     sdk_version: str,
     agent_server_version: str | None,
+    exclude_newer: str,
 ) -> list[BaselinePayloadCase]:
     with tempfile.TemporaryDirectory(prefix="persisted-settings-baseline-") as tmp_dir:
         venv_dir = Path(tmp_dir) / "venv"
-        venv.EnvBuilder(with_pip=True).create(venv_dir)
         python = _venv_python(venv_dir)
-
-        install_args = [
-            str(python),
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            f"openhands-sdk=={sdk_version}",
-        ]
+        packages = [f"openhands-sdk=={sdk_version}"]
         if agent_server_version is not None:
-            install_args.append(f"openhands-agent-server=={agent_server_version}")
+            packages.append(f"openhands-agent-server=={agent_server_version}")
 
         try:
-            subprocess.run(
-                install_args,
-                check=True,
-                capture_output=True,
-                text=True,
+            _uv_run(["uv", "venv", str(venv_dir), "--python", sys.executable])
+            _uv_run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(python),
+                    "--quiet",
+                    "--exclude-newer",
+                    exclude_newer,
+                    *packages,
+                ]
             )
-            result = subprocess.run(
-                [str(python), "-c", _BASELINE_PAYLOAD_SCRIPT],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            result = _uv_run([str(python), "-c", _BASELINE_PAYLOAD_SCRIPT])
         except subprocess.CalledProcessError as exc:
             output = (exc.stdout or "") + ("\n" + exc.stderr if exc.stderr else "")
             excerpt = output.strip()[-1000:]
-            baseline_desc = f"openhands-sdk=={sdk_version}"
-            if agent_server_version is not None:
-                baseline_desc += f", openhands-agent-server=={agent_server_version}"
+            baseline_desc = ", ".join(packages)
             raise PersistedSettingsCompatError(
-                f"Failed to generate baseline payloads from {baseline_desc}: {excerpt}"
+                "Failed to generate baseline payloads from "
+                f"{baseline_desc} with exclude-newer={exclude_newer}: {excerpt}"
             ) from exc
 
         raw_cases = json.loads(result.stdout)
@@ -603,18 +685,29 @@ def validate_baseline_payload_cases(
         )
 
 
-def _resolve_pypi_baselines() -> tuple[str | None, str | None]:
+def _resolve_pypi_baselines() -> tuple[str | None, str | None, str | None]:
     sdk_current = read_version_from_pyproject(
         REPO_ROOT / "openhands-sdk" / "pyproject.toml"
     )
+    sdk_baseline = get_pypi_baseline_version("openhands-sdk", sdk_current)
+    if sdk_baseline is None:
+        return None, None, None
+
+    cutoffs = [get_pypi_release_cutoff("openhands-sdk", sdk_baseline)]
     agent_server_current = read_version_from_pyproject(
         REPO_ROOT / "openhands-agent-server" / "pyproject.toml"
     )
-    sdk_baseline = get_pypi_baseline_version("openhands-sdk", sdk_current)
     agent_server_baseline = get_pypi_baseline_version(
         "openhands-agent-server", agent_server_current
     )
-    return sdk_baseline, agent_server_baseline
+    if agent_server_baseline is not None:
+        cutoffs.append(
+            get_pypi_release_cutoff(
+                "openhands-agent-server",
+                agent_server_baseline,
+            )
+        )
+    return sdk_baseline, agent_server_baseline, max(cutoffs)
 
 
 def main() -> int:
@@ -625,8 +718,8 @@ def main() -> int:
         f"{FIXTURE_ROOT.relative_to(REPO_ROOT)}"
     )
 
-    sdk_baseline, agent_server_baseline = _resolve_pypi_baselines()
-    if sdk_baseline is None:
+    sdk_baseline, agent_server_baseline, baseline_cutoff = _resolve_pypi_baselines()
+    if sdk_baseline is None or baseline_cutoff is None:
         print(
             "::warning title=Persisted settings baseline::No published openhands-sdk "
             "baseline found; skipping PyPI payload generation"
@@ -636,6 +729,7 @@ def main() -> int:
     baseline_cases = generate_baseline_payloads(
         sdk_version=sdk_baseline,
         agent_server_version=agent_server_baseline,
+        exclude_newer=baseline_cutoff,
     )
     validate_baseline_payload_cases(baseline_cases)
     print(
