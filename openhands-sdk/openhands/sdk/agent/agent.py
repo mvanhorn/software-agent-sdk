@@ -554,6 +554,13 @@ class Agent(CriticMixin, ResponseDispatchMixin, AgentBase):
                     "triggering condensation retry with condensed history: "
                     f"{e}"
                 )
+                # The incremental view we just sent may itself be the source of
+                # the malformed history (e.g., a manipulation-indices bug that
+                # let a property slip). Re-derive it from the event log with
+                # full `enforce_properties` before kicking off the condensation
+                # retry, so the condenser operates on a clean, enforced view.
+                # See https://github.com/OpenHands/software-agent-sdk/issues/3053.
+                state.rebuild_view()
                 on_event(CondensationRequest())
                 return
             logger.warning(

@@ -118,6 +118,39 @@ def test_agent_triggers_condensation_request_when_history_is_malformed(
     )
 
 
+def test_agent_rebuilds_view_on_malformed_history_recovery(monkeypatch):
+    """The malformed-history recovery path must re-derive the cached view.
+
+    If the incremental view itself is what produced the malformed history
+    (e.g., a manipulation-indices bug let a property slip), the condensation
+    retry needs a freshly enforced view to work from. See #3053.
+    """
+    llm = MalformedHistoryRaisingLLM()
+    agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
+    convo = Conversation(agent=agent)
+
+    convo._ensure_agent_ready()
+
+    call_count = 0
+    original_rebuild = type(convo.state).rebuild_view
+
+    def counting_rebuild(self):
+        nonlocal call_count
+        call_count += 1
+        return original_rebuild(self)
+
+    monkeypatch.setattr(type(convo.state), "rebuild_view", counting_rebuild)
+
+    seen = []
+    agent.step(convo, on_event=seen.append)
+
+    assert any(isinstance(e, CondensationRequest) for e in seen)
+    assert call_count == 1, (
+        f"rebuild_view should be called exactly once on malformed-history "
+        f"recovery, got {call_count}"
+    )
+
+
 @pytest.mark.parametrize("force_responses", [True, False])
 def test_agent_raises_ctx_exceeded_when_no_condenser(force_responses: bool):
     llm = RaisingLLM(force_responses=force_responses)
