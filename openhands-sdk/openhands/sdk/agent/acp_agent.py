@@ -22,7 +22,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1462,6 +1462,59 @@ class ACPAgent(AgentBase):
         self._client.on_token = None
         self._client.on_activity = None
 
+    def _make_caller_loop_marshaller(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        caller_thread_id: int,
+        callback: Callable[..., Any] | None,
+    ) -> Callable[..., None] | None:
+        """Wrap ``callback`` so portal-thread invocations hop back to ``loop``.
+
+        ``_OpenHandsACPBridge.session_update`` runs on the portal thread (the
+        connection's loop), and emits ``ACPToolCallEvent`` / streamed tokens
+        synchronously by calling whatever is wired into the bridge.  In the
+        ``astep`` path, ``arun()`` holds the conversation state's reentrant
+        ``FIFOLock`` on the caller loop's thread — invoking the agent-server's
+        ``on_event`` from the portal thread would re-acquire the lock from
+        the wrong thread and deadlock the conversation (same failure class as
+        #3348, just mid-turn instead of post-turn).
+
+        The returned wrapper:
+
+        * Runs synchronously if invoked from the caller thread — direct
+          paths like ``_cancel_inflight_tool_calls`` / ``_finalize_successful_turn``
+          go straight through, preserving sync invariants.
+        * Marshals to the caller loop via ``call_soon_threadsafe`` when
+          invoked from any other thread (the portal thread is the
+          motivating case, but third-party threads would be handled too).
+          ``call_soon_threadsafe`` is FIFO per loop, so ordering of bridge
+          callbacks is preserved relative to each other.
+
+        Returns ``None`` if ``callback`` is ``None`` so callers can wire
+        ``self._reset_client_for_turn(None, None)`` semantics through
+        unchanged.
+        """
+        if callback is None:
+            return None
+
+        def _invoke(*args: Any, **kwargs: Any) -> None:
+            if threading.get_ident() == caller_thread_id:
+                callback(*args, **kwargs)
+                return
+            try:
+                loop.call_soon_threadsafe(lambda: callback(*args, **kwargs))
+            except RuntimeError:
+                # Caller loop is closed (e.g. astep already returned and the
+                # bridge fired a trailing notification).  Dropping is the
+                # right behavior — _clear_turn_callbacks should have already
+                # unwired this, but guard the race.
+                logger.debug(
+                    "caller loop closed; dropping marshalled ACP callback",
+                    exc_info=True,
+                )
+
+        return _invoke
+
     def _build_prompt_blocks_for_latest_user_message(
         self, state: ConversationState
     ) -> list[Any] | None:
@@ -1613,7 +1666,25 @@ class ACPAgent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-        self._reset_client_for_turn(on_token, on_event)
+        # Marshal bridge callbacks back onto the caller loop.  Without this,
+        # ``_OpenHandsACPBridge.session_update`` would fire ``on_event`` /
+        # ``on_token`` from the portal thread mid-turn (e.g. for each
+        # ``ACPToolCallEvent`` or streamed token), which re-acquires
+        # ``state.lock`` from the wrong thread while ``arun()`` owns it on
+        # the caller loop's thread.  Bridge events now hop back via
+        # ``call_soon_threadsafe``; same-thread invocations (e.g. from
+        # ``_cancel_inflight_tool_calls`` called directly inside astep) run
+        # synchronously to preserve sync invariants in retry/error paths.
+        loop = asyncio.get_running_loop()
+        caller_thread_id = threading.get_ident()
+        marshalled_on_event = self._make_caller_loop_marshaller(
+            loop, caller_thread_id, on_event
+        )
+        marshalled_on_token = self._make_caller_loop_marshaller(
+            loop, caller_thread_id, on_token
+        )
+        assert marshalled_on_event is not None  # on_event is required
+        self._reset_client_for_turn(marshalled_on_token, marshalled_on_event)
 
         t0 = time.monotonic()
         try:
@@ -1662,7 +1733,9 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            marshalled_on_token, marshalled_on_event
+                        )
                     else:
                         raise
                 except ACPRequestError as e:
@@ -1684,13 +1757,29 @@ class ACPAgent(AgentBase):
                         )
                         await asyncio.sleep(delay)
                         self._cancel_inflight_tool_calls()
-                        self._reset_client_for_turn(on_token, on_event)
+                        self._reset_client_for_turn(
+                            marshalled_on_token, marshalled_on_event
+                        )
                     else:
                         raise
 
             elapsed = time.monotonic() - t0
             logger.info("ACP prompt returned in %.1fs (async)", elapsed)
             self._finalize_successful_turn(response, elapsed, state, on_event)
+        except asyncio.CancelledError:
+            # Interrupt landed while astep was awaiting the portal future
+            # (or sleeping between retries).  Close out any
+            # ``pending`` / ``in_progress`` ACPToolCallEvents we've already
+            # streamed — without this, those tool cards stay live in the
+            # event stream because ``LocalConversation._emit_orphaned_action_errors``
+            # only patches ``ActionEvent``s, not ``ACPToolCallEvent``s.
+            # We're on the caller thread here (asyncio's cancel raises on
+            # the awaiter's loop), and ``self._client.on_event`` is the
+            # marshaller — its same-thread branch will invoke ``on_event``
+            # synchronously, so the failed events are emitted before we
+            # re-raise.  Re-raising lets ``arun()`` transition to PAUSED.
+            self._cancel_inflight_tool_calls()
+            raise
         except TimeoutError:
             self._emit_turn_timeout(time.monotonic() - t0, state, on_event)
         except Exception as e:

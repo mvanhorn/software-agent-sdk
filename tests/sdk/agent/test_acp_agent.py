@@ -1468,6 +1468,182 @@ class TestACPAgentAstep:
             conversation.state.execution_status == ConversationExecutionStatus.FINISHED
         )
 
+    def test_astep_marshals_bridge_callbacks_to_caller_thread(self, tmp_path):
+        """Mid-turn bridge callbacks (ACPToolCallEvents, streamed tokens)
+        must NOT fire on the portal thread.
+
+        Without marshalling, ``_OpenHandsACPBridge.session_update`` invokes
+        the registered ``on_event`` synchronously from the portal loop's
+        thread, re-acquiring ``state.lock`` from the wrong thread while
+        ``arun()`` owns it — same deadlock class as #3348, just mid-turn
+        rather than post-turn.  This test stages an ACP prompt that fires
+        an ``ACPToolCallEvent`` and a token chunk from the portal loop and
+        asserts both land back on the caller thread.
+        """
+        from openhands.sdk.event import ACPToolCallEvent
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        caller_thread_id = threading.get_ident()
+        on_event_thread_ids: list[int] = []
+        on_token_thread_ids: list[int] = []
+        observed_event_kinds: list[str] = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        async def _fake_prompt(prompt_blocks, session_id):
+            # Mimic what the real bridge does inside session_update:
+            # fire an ACPToolCallEvent + a token chunk from the portal
+            # thread (= the thread we're on now).
+            if mock_client.on_event is not None:
+                mock_client.on_event(
+                    ACPToolCallEvent(
+                        tool_call_id="tc-1",
+                        title="echo",
+                        status="in_progress",
+                        tool_kind=None,
+                        raw_input=None,
+                        raw_output=None,
+                        content=None,
+                        is_error=False,
+                    )
+                )
+            if mock_client.on_token is not None:
+                mock_client.on_token("partial-chunk")
+            mock_client.accumulated_text.append("ok")
+            return None
+
+        agent._conn.prompt = _fake_prompt
+        agent._session_id = "test-session"
+
+        executor = AsyncExecutor()
+        try:
+            agent._executor = executor
+
+            def _capture_event(event):
+                on_event_thread_ids.append(threading.get_ident())
+                observed_event_kinds.append(type(event).__name__)
+
+            def _capture_token(chunk):
+                on_token_thread_ids.append(threading.get_ident())
+
+            asyncio.run(
+                agent.astep(
+                    conversation,
+                    on_event=_capture_event,
+                    on_token=_capture_token,
+                )
+            )
+        finally:
+            executor.close()
+
+        # The portal-thread ACPToolCallEvent was marshalled — landed on the
+        # caller thread, not the portal thread.
+        assert "ACPToolCallEvent" in observed_event_kinds, (
+            f"ACPToolCallEvent missing from observed events: {observed_event_kinds}"
+        )
+        assert len(on_event_thread_ids) >= 3  # tool call + action + observation
+        for tid in on_event_thread_ids:
+            assert tid == caller_thread_id, (
+                f"on_event fired on thread {tid} instead of caller "
+                f"{caller_thread_id} — bridge callback was not marshalled"
+            )
+        # And on_token chunks also landed on the caller thread.
+        assert len(on_token_thread_ids) >= 1
+        for tid in on_token_thread_ids:
+            assert tid == caller_thread_id, (
+                f"on_token fired on thread {tid} instead of caller "
+                f"{caller_thread_id} — token callback was not marshalled"
+            )
+
+    def test_astep_emits_failed_tool_calls_on_cancellation(self, tmp_path):
+        """``asyncio.CancelledError`` during astep must close in-flight
+        ``ACPToolCallEvent``s as ``failed`` and re-raise.
+
+        Otherwise the cancel races straight to ``finally`` (which only
+        clears callbacks) and any pending/in_progress tool cards stay
+        live forever — ``LocalConversation._emit_orphaned_action_errors``
+        only patches ``ActionEvent``s, not ``ACPToolCallEvent``s.
+        """
+        from openhands.sdk.event import ACPToolCallEvent
+        from openhands.sdk.utils.async_executor import AsyncExecutor
+
+        agent = _make_agent()
+        conversation = self._make_conversation_with_message(tmp_path)
+
+        emitted_events: list = []
+
+        mock_client = _OpenHandsACPBridge()
+        mock_client.get_turn_usage_update = MagicMock(return_value=object())
+        agent._client = mock_client
+        agent._conn = MagicMock()
+
+        async def _fake_prompt(prompt_blocks, session_id):
+            # Seed an in-flight tool call AFTER _reset_client_for_turn has
+            # run (which clears accumulated_tool_calls).  In production
+            # the bridge accumulates these inside session_update as
+            # ToolCallStart / ToolCallProgress notifications arrive.
+            mock_client.accumulated_tool_calls.append(
+                {
+                    "tool_call_id": "tc-cancel-1",
+                    "title": "in-flight tool",
+                    "status": "in_progress",
+                    "tool_kind": None,
+                    "raw_input": None,
+                    "raw_output": None,
+                    "content": None,
+                }
+            )
+            # Block long enough for the cancel to land.  Real ACP prompt
+            # would be similarly blocked in await self._conn.prompt(...).
+            await asyncio.sleep(60)
+            return None
+
+        agent._conn.prompt = _fake_prompt
+        agent._session_id = "test-session"
+
+        executor = AsyncExecutor()
+
+        async def _run_with_cancel() -> None:
+            task = asyncio.create_task(
+                agent.astep(conversation, on_event=emitted_events.append)
+            )
+            # Yield enough for astep to wire callbacks and start awaiting
+            # the prompt future, then cancel.
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        try:
+            agent._executor = executor
+            asyncio.run(_run_with_cancel())
+        finally:
+            executor.close()
+
+        # The orphaned in_progress tool call was closed out with a
+        # terminal ``failed`` ACPToolCallEvent.
+        failed_tool_events = [
+            e
+            for e in emitted_events
+            if isinstance(e, ACPToolCallEvent)
+            and e.tool_call_id == "tc-cancel-1"
+            and e.status == "failed"
+        ]
+        observed = [
+            (type(e).__name__, getattr(e, "status", None)) for e in emitted_events
+        ]
+        assert len(failed_tool_events) == 1, (
+            f"expected one terminal failed event for tc-cancel-1, "
+            f"got events: {observed}"
+        )
+        assert failed_tool_events[0].is_error is True
+
 
 # ---------------------------------------------------------------------------
 # Cleanup
