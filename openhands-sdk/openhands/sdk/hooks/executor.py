@@ -161,7 +161,9 @@ class HookExecutor:
         async_process_manager: AsyncProcessManager | None = None,
         llm: "LLM | None" = None,
         persistence_dir: str | None = None,
-        visualizer: type[ConversationVisualizerBase] | ConversationVisualizerBase | None = None,
+        visualizer: type[ConversationVisualizerBase]
+        | ConversationVisualizerBase
+        | None = None,
     ):
         self.working_dir = working_dir or os.getcwd()
         self.async_process_manager = async_process_manager or AsyncProcessManager()
@@ -349,6 +351,9 @@ class HookExecutor:
 
         # Handle async hooks: fire and forget
         if hook.async_:
+            assert (
+                hook.command is not None
+            )  # Validated by _validate_type_fields for COMMAND
             try:
                 creationflags = 0
                 start_new_session = True
@@ -395,6 +400,9 @@ class HookExecutor:
 
         try:
             # Execute the hook command synchronously
+            assert (
+                hook.command is not None
+            )  # Validated by _validate_type_fields for COMMAND
             result = subprocess.run(
                 hook.command,
                 shell=True,
