@@ -1119,3 +1119,50 @@ def test_acp_agent_reports_no_openhands_capabilities() -> None:
     assert agent.supports_openhands_mcp is False
     assert agent.supports_condenser is False
     assert agent.agent_kind == "acp"
+
+
+def test_llm_subscription_fields_roundtrip() -> None:
+    settings = validate_agent_settings(
+        {
+            "llm": {
+                "model": "gpt-5.2-codex",
+                "auth_type": "subscription",
+                "subscription_vendor": "openai",
+            }
+        }
+    )
+
+    assert isinstance(settings, OpenHandsAgentSettings)
+    assert settings.llm.auth_type == "subscription"
+    assert settings.llm.subscription_vendor == "openai"
+    dumped = settings.model_dump(mode="json", exclude_none=True)
+    assert dumped["llm"]["auth_type"] == "subscription"
+    assert dumped["llm"]["subscription_vendor"] == "openai"
+    assert "api_key" not in dumped["llm"]
+
+
+def test_llm_create_agent_resolves_subscription_llm(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    original_llm = LLM(
+        model="gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm = LLM(model="openai/gpt-5.2-codex")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm is original_llm
+        return runtime_llm
+
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    agent = OpenHandsAgentSettings(llm=original_llm).create_agent()
+
+    assert agent.llm is runtime_llm
+    assert agent.llm.is_subscription is True

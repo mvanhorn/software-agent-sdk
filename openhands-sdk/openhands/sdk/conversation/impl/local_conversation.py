@@ -44,6 +44,7 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.io import LocalFileStore
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -670,7 +671,7 @@ class LocalConversation(BaseConversation):
         try:
             new_llm = self.llm_registry.get(llm.usage_id)
         except KeyError:
-            new_llm = llm
+            new_llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(new_llm)
         with self._state:
             self.agent = self.agent.model_copy(update={"llm": new_llm})

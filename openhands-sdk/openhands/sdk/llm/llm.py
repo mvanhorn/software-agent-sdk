@@ -199,6 +199,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             label="API Key",
         ),
     )
+    auth_type: Literal["api_key", "subscription"] = Field(
+        default="api_key",
+        description="Authentication mode for the LLM.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="Authentication",
+        ),
+    )
+    subscription_vendor: Literal["openai"] | None = Field(
+        default=None,
+        description="Subscription provider for subscription-backed LLM access.",
+        json_schema_extra=field_meta(
+            SettingProminence.CRITICAL,
+            label="Subscription provider",
+            depends_on=("auth_type",),
+        ),
+    )
     base_url: str | None = Field(
         default=None,
         description="Custom base URL.",

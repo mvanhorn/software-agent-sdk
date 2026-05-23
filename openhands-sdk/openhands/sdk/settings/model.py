@@ -859,6 +859,7 @@ class OpenHandsAgentSettings(AgentSettingsBase):
             agent = settings.create_agent()
         """
         from openhands.sdk.agent import Agent
+        from openhands.sdk.llm.auth.openai import create_subscription_llm_from_config
         from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, SwitchLLMTool
         from openhands.sdk.tool.builtins.switch_llm import has_llm_profiles
 
@@ -872,13 +873,14 @@ class OpenHandsAgentSettings(AgentSettingsBase):
         if self.enable_switch_llm_tool and has_llm_profiles():
             include_default_tools.append(SwitchLLMTool.__name__)
 
+        llm = create_subscription_llm_from_config(self.llm)
         return Agent(
-            llm=self.llm,
+            llm=llm,
             tools=self.tools,
             mcp_config=mcp_config,
             include_default_tools=include_default_tools,
             agent_context=self.agent_context,
-            condenser=self.build_condenser(self.llm),
+            condenser=self.build_condenser(llm),
             critic=self.build_critic(),
         )
 
