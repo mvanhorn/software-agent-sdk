@@ -94,6 +94,7 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
+    _subscription_disabled_condenser: Any | None
 
     def __init__(
         self,
@@ -174,6 +175,7 @@ class LocalConversation(BaseConversation):
         self._plugins_loaded = False
         self._pending_hook_config = hook_config  # Will be combined with plugin hooks
         self._agent_ready = False  # Agent initialized lazily after plugins loaded
+        self._subscription_disabled_condenser = None
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -677,7 +679,15 @@ class LocalConversation(BaseConversation):
         with self._state:
             update: dict[str, Any] = {"llm": new_llm}
             if new_llm.is_subscription:
+                if self.agent.condenser is not None:
+                    self._subscription_disabled_condenser = self.agent.condenser
                 update["condenser"] = None
+            elif (
+                self.agent.condenser is None
+                and self._subscription_disabled_condenser is not None
+            ):
+                update["condenser"] = self._subscription_disabled_condenser
+                self._subscription_disabled_condenser = None
             self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
