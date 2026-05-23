@@ -136,9 +136,6 @@ def test_openai_subscription_status_endpoint_does_not_return_tokens(
                 expires_at=4_102_444_800_000,
             )
 
-        def save_credentials(self, credentials):
-            self.__class__.saved_credentials = credentials
-
     monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
 
     response = client.get("/api/llm/subscription/openai/status")
