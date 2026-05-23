@@ -1510,7 +1510,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     def _get_litellm_api_key_value(self) -> str | None:
         api_key_value: str | None = None
-        if self.api_key:
+        if self.is_subscription:
+            from openhands.sdk.llm.auth.openai import OpenAISubscriptionAuth
+
+            auth = OpenAISubscriptionAuth()
+            credentials = auth.refresh_if_needed_sync()
+            if credentials is None:
+                raise ValueError("OpenAI subscription login is required")
+            api_key_value = credentials.access_token
+            account_id = auth.extract_chatgpt_account_id(credentials)
+            self.extra_headers = {
+                **(self.extra_headers or {}),
+                **({"chatgpt-account-id": account_id} if account_id else {}),
+            }
+        elif self.api_key:
             assert isinstance(self.api_key, SecretStr)
             api_key_value = self.api_key.get_secret_value()
 
@@ -2026,6 +2039,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def to_persisted(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Serialize this LLM for profile persistence."""
         data = self.model_dump(mode="json", exclude_none=True, context=context)
+        if data.get("auth_type") == "subscription":
+            data.pop("api_key", None)
+            data.pop("base_url", None)
+            data.pop("extra_headers", None)
         data["schema_version"] = LLM_PROFILE_SCHEMA_VERSION
         return data
 

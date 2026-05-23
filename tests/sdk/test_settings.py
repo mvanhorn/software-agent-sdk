@@ -1190,8 +1190,11 @@ def test_openai_subscription_create_llm_serializes_subscription_auth(
 
     assert llm.auth_type == "subscription"
     assert llm.subscription_vendor == "openai"
+    assert llm.api_key is None
     assert llm.to_persisted()["auth_type"] == "subscription"
     assert llm.to_persisted()["subscription_vendor"] == "openai"
+    assert "api_key" not in llm.to_persisted(context={"expose_secrets": "plaintext"})
+    assert "base_url" not in llm.to_persisted()
 
 
 def test_create_subscription_llm_from_config_preserves_non_auth_options(

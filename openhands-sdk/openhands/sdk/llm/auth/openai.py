@@ -674,7 +674,7 @@ class OpenAISubscriptionAuth:
         return await _request_device_code()
 
     async def poll_device_login(
-        self, device_code: DeviceCode
+        self, device_code: DeviceCode, *, persist: bool = True
     ) -> OAuthCredentials | None:
         """Poll once for a device-code OAuth login result.
 
@@ -683,7 +683,7 @@ class OpenAISubscriptionAuth:
         code_response = await _poll_device_code_once(device_code)
         if code_response is None:
             return None
-        return await self._complete_device_login(code_response)
+        return await self._complete_device_login(code_response, persist=persist)
 
     async def _login_with_device_code(self) -> OAuthCredentials:
         """Perform device-code OAuth login flow."""
@@ -705,9 +705,12 @@ class OpenAISubscriptionAuth:
         return await self._complete_device_login(code_response)
 
     async def _complete_device_login(
-        self, code_response: dict[str, Any]
+        self, code_response: dict[str, Any], *, persist: bool = True
     ) -> OAuthCredentials:
-        """Exchange a completed device auth response and persist credentials."""
+        """Exchange a completed device auth response.
+
+        Optionally persists credentials after the exchange succeeds.
+        """
         try:
             authorization_code = code_response["authorization_code"]
             code_verifier = code_response["code_verifier"]
@@ -727,9 +730,18 @@ class OpenAISubscriptionAuth:
             refresh_token=tokens["refresh_token"],
             expires_at=expires_at,
         )
-        self._credential_store.save(credentials)
+        if persist:
+            self.save_credentials(credentials)
         logger.info("OpenAI device-code login successful")
         return credentials
+
+    def save_credentials(self, credentials: OAuthCredentials) -> None:
+        """Persist OpenAI subscription credentials."""
+        self._credential_store.save(credentials)
+
+    def extract_chatgpt_account_id(self, credentials: OAuthCredentials) -> str | None:
+        """Return the ChatGPT account id for request headers, if present."""
+        return _extract_chatgpt_account_id(credentials.access_token)
 
     def logout(self) -> bool:
         """Remove stored credentials.
@@ -801,7 +813,7 @@ class OpenAISubscriptionAuth:
         llm = LLM(
             model=f"openai/{model}",
             base_url=CODEX_API_ENDPOINT.rsplit("/", 1)[0],
-            api_key=creds.access_token,
+            api_key=None,
             extra_headers=extra_headers,
             litellm_extra_body=extra_body,
             temperature=None,

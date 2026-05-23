@@ -674,7 +674,10 @@ class LocalConversation(BaseConversation):
             new_llm = create_subscription_llm_from_config(llm)
             self.llm_registry.add(new_llm)
         with self._state:
-            self.agent = self.agent.model_copy(update={"llm": new_llm})
+            update = {"llm": new_llm}
+            if new_llm.is_subscription:
+                update["condenser"] = None
+            self.agent = self.agent.model_copy(update=update)
             self._state.agent = self.agent
             self._pin_prompt_cache_key()
 

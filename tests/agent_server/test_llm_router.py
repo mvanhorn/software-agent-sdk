@@ -136,6 +136,9 @@ def test_openai_subscription_status_endpoint_does_not_return_tokens(
                 expires_at=4_102_444_800_000,
             )
 
+        def save_credentials(self, credentials):
+            self.__class__.saved_credentials = credentials
+
     monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
 
     response = client.get("/api/llm/subscription/openai/status")
@@ -205,7 +208,10 @@ def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch
     class FakeAuth:
         calls = 0
 
-        async def poll_device_login(self, device_code):
+        saved_credentials = None
+
+        async def poll_device_login(self, device_code, *, persist=True):
+            assert persist is False
             self.__class__.calls += 1
             if self.__class__.calls == 1:
                 return None
@@ -215,6 +221,9 @@ def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch
                 refresh_token="refresh-token",
                 expires_at=4_102_444_800_000,
             )
+
+        def save_credentials(self, credentials):
+            self.__class__.saved_credentials = credentials
 
     monkeypatch.setattr(llm_router, "_get_openai_subscription_auth", FakeAuth)
 
@@ -232,6 +241,7 @@ def test_openai_subscription_device_poll_pending_and_success(client, monkeypatch
     assert success.status_code == 200
     assert success.json()["connected"] is True
     assert success.json()["expires_at"] == 4_102_444_800_000
+    assert FakeAuth.saved_credentials is not None
     assert "access-token" not in success.text
     assert "opaque-token" not in llm_router._PENDING_OPENAI_DEVICE_LOGINS
 

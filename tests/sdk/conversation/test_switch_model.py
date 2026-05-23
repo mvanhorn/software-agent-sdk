@@ -5,6 +5,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import LLM, LocalConversation
 from openhands.sdk.agent import Agent
+from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.llm import llm_profile_store
 from openhands.sdk.llm.llm_profile_store import LLMProfileStore
 from openhands.sdk.testing import TestLLM
@@ -252,3 +253,48 @@ def test_switch_profile_delegates_to_switch_llm(profile_store, monkeypatch):
     assert len(seen) == 1
     assert seen[0].usage_id == "profile:fast"
     assert seen[0].model == "fast-model"
+
+
+def test_switch_llm_to_subscription_profile_disables_condenser(
+    monkeypatch, empty_profile_store
+):
+    import openhands.sdk.conversation.impl.local_conversation as local_conversation
+
+    condenser = LLMSummarizingCondenser(
+        llm=_make_llm("condenser-model", "condenser"),
+        max_size=100,
+        keep_first=5,
+    )
+    conv = LocalConversation(
+        agent=Agent(
+            llm=_make_llm("default-model", "test-llm"),
+            tools=[],
+            condenser=condenser,
+        ),
+        workspace=Path.cwd(),
+    )
+    assert conv.agent.condenser is condenser
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        runtime = llm.model_copy()
+        runtime._is_subscription = True
+        return runtime
+
+    monkeypatch.setattr(
+        local_conversation,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    conv.switch_llm(
+        LLM(
+            model="gpt-5.2-codex",
+            usage_id="profile:codex",
+            auth_type="subscription",
+            subscription_vendor="openai",
+        )
+    )
+
+    assert conv.agent.llm.is_subscription
+    assert conv.agent.condenser is None
+    assert conv.state.agent.condenser is None
