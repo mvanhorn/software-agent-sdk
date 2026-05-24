@@ -178,7 +178,7 @@ jobs:
                   TODO_FILE: ${{ matrix.todo.file }}
                   TODO_LINE: ${{ matrix.todo.line }}
                   TODO_DESCRIPTION: ${{ matrix.todo.description }}
-                  BASE_REF: ${{ github.ref_name }}
+                  BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
                   PYTHONPATH: ''
               run: |
                   echo "Processing TODO: $TODO_DESCRIPTION"

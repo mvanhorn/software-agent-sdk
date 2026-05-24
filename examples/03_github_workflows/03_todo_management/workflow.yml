@@ -181,7 +181,7 @@ jobs:
                   TODO_LINE: ${{ matrix.todo.line }}
                   TODO_DESCRIPTION: ${{ matrix.todo.description }}
                   PYTHONPATH: ''
-                  GITHUB_REF_NAME: ${{ github.ref_name }}
+                  BASE_REF: ${{ github.event.pull_request.base.ref || github.ref_name }}
               run: |
                   echo "Processing TODO: $TODO_DESCRIPTION"
                   echo "File: $TODO_FILE:$TODO_LINE"
@@ -292,7 +292,7 @@ jobs:
                     --arg title "$PR_TITLE" \
                     --arg body "$PR_BODY" \
                     --arg head "$BRANCH_NAME" \
-                    --arg base "$GITHUB_REF_NAME" \
+                    --arg base "$BASE_REF" \
                     '{title: $title, body: $body, head: $head, base: $base}')
 
                   # Create PR using GitHub CLI or API

@@ -506,9 +506,9 @@ jobs:
               id: create_manifest
               env:
                   GIT_REF: ${{ github.ref }}
+                  SHORT_SHA: ${{ steps.get_sha.outputs.short_sha }}
+                  VARIANT: ${{ matrix.variant }}
               run: |
-                  SHORT_SHA=${{ steps.get_sha.outputs.short_sha }}
-                  VARIANT=${{ matrix.variant }}
                   AMD64_TAGS_CSV=$(jq -r '.tags' build-info/${VARIANT}-amd64.json)
                   declare -A SEEN_MANIFEST_TAGS=()
                   MANIFEST_TAGS=()
@@ -560,14 +560,17 @@ jobs:
 
                   # Save manifest info for consolidation
                   mkdir -p manifest-info
-                  cat > "manifest-info/${VARIANT}.json" << EOF
-                  {
-                    "variant": "${VARIANT}",
-                    "image": "${IMAGE}",
-                    "short_sha": "${SHORT_SHA}",
-                    "manifest_tag": "${MANIFEST_TAG_CSV}"
-                  }
-                  EOF
+                  jq -n \
+                    --arg variant "$VARIANT" \
+                    --arg image "$IMAGE" \
+                    --arg short_sha "$SHORT_SHA" \
+                    --arg manifest_tag "$MANIFEST_TAG_CSV" \
+                    '{
+                      variant: $variant,
+                      image: $image,
+                      short_sha: $short_sha,
+                      manifest_tag: $manifest_tag
+                    }' > "manifest-info/${VARIANT}.json"
 
             - name: Upload manifest info artifact
               uses: actions/upload-artifact@v7
