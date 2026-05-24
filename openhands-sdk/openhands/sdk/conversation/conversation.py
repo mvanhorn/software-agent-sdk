@@ -46,7 +46,7 @@ class Conversation:
         from openhands.sdk.plugin import PluginSource
         from pydantic import SecretStr
 
-        llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        llm = LLM(model="gpt-5.5", api_key=SecretStr("key"))
         agent = Agent(llm=llm, tools=[])
         conversation = Conversation(
             agent=agent,
@@ -81,6 +81,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
     ) -> "LocalConversation": ...
@@ -107,6 +108,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
     ) -> "RemoteConversation": ...
@@ -133,6 +135,7 @@ class Conversation:
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
         delete_on_close: bool = True,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
     ) -> BaseConversation:
@@ -188,6 +191,7 @@ class Conversation:
                 secrets=secrets,
                 delete_on_close=delete_on_close,
                 tags=effective_tags if effective_tags else None,
+                user_id=user_id,
                 observability_metadata=observability_metadata,
                 observability_tags=observability_tags,
             )
@@ -208,6 +212,7 @@ class Conversation:
             secrets=secrets,
             delete_on_close=delete_on_close,
             tags=tags,
+            user_id=user_id,
             observability_metadata=observability_metadata,
             observability_tags=observability_tags,
         )

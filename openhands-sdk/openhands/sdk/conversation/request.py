@@ -145,7 +145,7 @@ class StartConversationRequest(BaseModel):
         default_factory=list,
         description=(
             "Agent definitions from the client's registry. These are "
-            "registered on the server so that DelegateTool and TaskSetTool "
+            "registered on the server so that task tools "
             "can see user-registered subagents."
         ),
     )
@@ -172,6 +172,14 @@ class StartConversationRequest(BaseModel):
         description=(
             "Key-value tags for the conversation. Keys must be lowercase "
             "alphanumeric. Values are arbitrary strings up to 256 characters."
+        ),
+    )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional user ID to associate with observability traces. "
+            "When set, this is passed to Laminar.set_trace_user_id() so "
+            "traces can be queried by user."
         ),
     )
     observability_metadata: ConversationObservabilityMetadata = Field(
@@ -223,10 +231,10 @@ class StartConversationRequest(BaseModel):
             return data
         payload = dict(data)
         if payload.get("agent") is None and payload.get("agent_settings") is not None:
-            from openhands.sdk.settings.model import AgentSettings
+            from openhands.sdk.settings.model import validate_agent_settings
 
             try:
-                payload["agent"] = AgentSettings.from_persisted(
+                payload["agent"] = validate_agent_settings(
                     payload["agent_settings"]
                 ).create_agent()
             except (TypeError, ValueError) as exc:

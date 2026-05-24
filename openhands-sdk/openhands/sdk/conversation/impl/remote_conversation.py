@@ -666,6 +666,7 @@ class RemoteConversation(BaseConversation):
         secrets: Mapping[str, SecretValue] | None = None,
         delete_on_close: bool = False,
         tags: dict[str, str] | None = None,
+        user_id: str | None = None,
         observability_metadata: dict[str, TraceMetadataValue] | None = None,
         observability_tags: list[str] | None = None,
         **_: object,
@@ -696,6 +697,7 @@ class RemoteConversation(BaseConversation):
             secrets: Optional secrets to initialize the conversation with
             tags: Optional key-value tags for the conversation. Keys must be
                   lowercase alphanumeric, values up to 256 characters.
+            user_id: Optional user ID to associate with observability traces
             observability_metadata: Optional trace metadata for observability backends.
             observability_tags: Optional root span tags for observability backends.
         """
@@ -891,6 +893,7 @@ class RemoteConversation(BaseConversation):
 
         self._start_observability_span(
             str(self._id),
+            user_id=user_id,
             metadata=observability_metadata,
             tags=observability_tags,
         )
@@ -923,7 +926,7 @@ class RemoteConversation(BaseConversation):
                 log_dir = target_llm.log_completions_folder
                 os.makedirs(log_dir, exist_ok=True)
                 log_path = os.path.join(log_dir, event.filename)
-                with open(log_path, "w") as f:
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write(event.log_data)
                 logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:

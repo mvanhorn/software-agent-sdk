@@ -131,6 +131,7 @@ class BaseConversation(ABC):
     def _start_observability_span(
         self,
         session_id: str,
+        user_id: str | None = None,
         metadata: dict[str, TraceMetadataValue] | None = None,
         tags: list[str] | None = None,
     ) -> None:
@@ -138,6 +139,7 @@ class BaseConversation(ABC):
 
         Args:
             session_id: The session ID to associate with the trace
+            user_id: Optional user ID to associate with the trace
             metadata: Optional trace-level metadata to attach to observability backends
             tags: Optional span tags to attach to the conversation root span
         """
@@ -147,7 +149,11 @@ class BaseConversation(ABC):
             # Idempotent: never start two roots for one conversation.
             return
         self._observability_root_span = start_root_span(
-            "conversation", session_id=session_id, metadata=metadata, tags=tags
+            "conversation",
+            session_id=session_id,
+            user_id=user_id,
+            metadata=metadata,
+            tags=tags,
         )
 
     def _end_observability_span(self) -> None:
@@ -193,6 +199,15 @@ class BaseConversation(ABC):
         """
         ...
 
+    async def arun(self) -> None:
+        """Async variant of :meth:`run`.
+
+        Default implementation delegates to the synchronous ``run()``.
+        Subclasses (e.g., :class:`LocalConversation`) should override this
+        to use async agent steps for non-blocking LLM I/O.
+        """
+        self.run()
+
     @abstractmethod
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy for the conversation."""
@@ -227,6 +242,25 @@ class BaseConversation(ABC):
 
     @abstractmethod
     def pause(self) -> None: ...
+
+    def interrupt(self) -> None:
+        """Immediately cancel an in-flight ``arun()`` LLM call.
+
+        Unlike :meth:`pause`, which waits for the current LLM request to
+        finish, ``interrupt()`` cancels the asyncio task that is driving
+        ``arun()``, so the cancellation takes effect at the very next
+        ``await`` boundary — typically inside the streaming HTTP read.
+
+        If no async run is in progress (e.g. the synchronous ``run()`` is
+        active instead), the call silently falls back to :meth:`pause`.
+
+        After an interrupt the conversation status is set to ``PAUSED``
+        and an :class:`~openhands.sdk.event.InterruptEvent` is emitted,
+        so the conversation can be resumed with a subsequent ``run()``
+        or ``arun()`` call.
+        """
+        # Default: fall back to pause for subclasses that don't override.
+        self.pause()
 
     @abstractmethod
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None: ...
