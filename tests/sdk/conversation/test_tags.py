@@ -121,4 +121,4 @@ def test_observability_metadata_in_pydantic_model():
     assert m.observability_metadata == {}
 
     with pytest.raises(ValidationError):
-        TestModel(observability_metadata={"nested": {"bad": True}})
+        TestModel.model_validate({"observability_metadata": {"nested": {"bad": True}}})

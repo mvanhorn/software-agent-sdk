@@ -7,6 +7,7 @@ from uuid import UUID
 
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
+from openhands.sdk.conversation.types import TraceMetadataValue
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.tool.schema import Action, Observation
 
@@ -130,7 +131,9 @@ def test_base_conversation_passes_observability_metadata():
         ),
         patch("openhands.sdk.conversation.base.start_root_span") as mock_start_span,
     ):
-        metadata = {"repo_name": "OpenHands/software-agent-sdk"}
+        metadata: dict[str, TraceMetadataValue] = {
+            "repo_name": "OpenHands/software-agent-sdk"
+        }
         tags = ["repo:OpenHands/software-agent-sdk"]
 
         conversation._start_observability_span(
