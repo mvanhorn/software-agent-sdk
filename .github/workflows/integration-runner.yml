@@ -86,6 +86,8 @@ jobs:
                     echo "Using specified model_ids: $MODEL_IDS"
                   fi
 
+                  export MODEL_IDS
+
                   # Resolve model configs using resolve_model_config.py
                   # Transform output to matrix format for integration tests
                   MATRIX=$(python3 << 'EOF'

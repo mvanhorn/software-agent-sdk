@@ -73,7 +73,12 @@ jobs:
                     ARGS="$ARGS --models $DEFAULT_MODELS"
                   fi
 
-                  echo "args=$ARGS" >> $GITHUB_OUTPUT
+                  DELIMITER="args_$(openssl rand -hex 16)"
+                  {
+                    echo "args<<$DELIMITER"
+                    printf '%s\n' "$ARGS"
+                    echo "$DELIMITER"
+                  } >> "$GITHUB_OUTPUT"
 
             - name: Run API compliance tests
               id: compliance

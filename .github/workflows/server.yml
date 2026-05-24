@@ -414,30 +414,45 @@ jobs:
                   fi
 
             - name: Summary (${{ matrix.variant }}-${{ matrix.arch }}) - outputs
+              env:
+                  SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
+                  TAGS: ${{ steps.prep.outputs.tags }}
+                  BUILD_DIGEST: ${{ steps.build.outputs.digest }}
               run: |
-                  echo "Image: ${{ env.IMAGE }}"
-                  echo "Variant: ${{ env.VARIANT }}"
-                  echo "Architecture: ${{ env.ARCH }}"
-                  echo "Platform: ${{ env.PLATFORM }}"
-                  echo "Short SHA: ${{ steps.prep.outputs.short_sha }}"
-                  echo "Tags: ${{ steps.prep.outputs.tags }}"
-                  echo "Build digest: ${{ steps.build.outputs.digest }}"
+                  echo "Image: $IMAGE"
+                  echo "Variant: $VARIANT"
+                  echo "Architecture: $ARCH"
+                  echo "Platform: $PLATFORM"
+                  echo "Short SHA: $SHORT_SHA"
+                  echo "Tags: $TAGS"
+                  echo "Build digest: $BUILD_DIGEST"
 
             - name: Save build info for consolidation
+              env:
+                  SHORT_SHA: ${{ steps.prep.outputs.short_sha }}
+                  TAGS: ${{ steps.prep.outputs.tags }}
+                  VERSIONED_TAGS_CSV: ${{ steps.prep.outputs.versioned_tags_csv }}
               run: |
                   mkdir -p build-info
-                  cat > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json" << EOF
-                  {
-                    "variant": "${{ matrix.variant }}",
-                    "arch": "${{ matrix.arch }}",
-                    "base_image": "${{ matrix.base_image }}",
-                    "image": "${{ env.IMAGE }}",
-                    "short_sha": "${{ steps.prep.outputs.short_sha }}",
-                    "tags": "${{ steps.prep.outputs.tags }}",
-                    "versioned_tags_csv": "${{ steps.prep.outputs.versioned_tags_csv }}",
-                    "platform": "${{ env.PLATFORM }}"
-                  }
-                  EOF
+                  jq -n \
+                    --arg variant "$VARIANT" \
+                    --arg arch "$ARCH" \
+                    --arg base_image "$BASE_IMAGE" \
+                    --arg image "$IMAGE" \
+                    --arg short_sha "$SHORT_SHA" \
+                    --arg tags "$TAGS" \
+                    --arg versioned_tags_csv "$VERSIONED_TAGS_CSV" \
+                    --arg platform "$PLATFORM" \
+                    '{
+                      variant: $variant,
+                      arch: $arch,
+                      base_image: $base_image,
+                      image: $image,
+                      short_sha: $short_sha,
+                      tags: $tags,
+                      versioned_tags_csv: $versioned_tags_csv,
+                      platform: $platform
+                    }' > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json"
 
             - name: Upload build info artifact
               uses: actions/upload-artifact@v7
