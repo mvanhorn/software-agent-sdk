@@ -2468,3 +2468,154 @@ class TestStatsCallbackNoDeadlock:
         )
         emit_mock = cast(MagicMock, service._emit_event_from_thread)
         emit_mock.assert_called_once()
+
+
+@pytest.mark.timeout(30)
+async def test_message_in_run_cleanup_tail_is_not_stranded(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """A message that lands while a *finished* run is still in its
+    ``wait_for_pending()`` cleanup tail must still be processed.
+
+    Regression test for a stranded-message race: ``send_message(run=True)``
+    suppresses run()'s ``conversation_already_running`` while ``_run_task`` is
+    wrapping up, and without the re-arm in ``_run_and_publish`` nothing re-runs
+    once the tail clears — so the message sits unprocessed until the next send.
+
+    Not the in-flight case: ``LocalConversation.run`` deliberately keeps looping
+    on FINISHED so a message arriving *during* a step is absorbed. The unguarded
+    gap is strictly the post-run executor tail owned by ``_run_and_publish``.
+    """
+    (tmp_path / "ws").mkdir()
+    # One scripted reply per user message; each is plain text (no tool calls)
+    # so the agent finishes the turn immediately. ``_call_count`` tells us how
+    # many turns actually ran.
+    parent_llm = SlowTestLLM.from_messages(
+        [text_message("reply one"), text_message("reply two")],
+        latency_s=0.0,
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="tail-strand",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None and es._callback_wrapper is not None
+
+    # Park every run in its wait_for_pending() tail until released. It runs in
+    # a thread-pool worker, so block on a threading.Event there and signal
+    # entry back to the test.
+    entered_tail = threading.Event()
+    release_tail = threading.Event()
+
+    def _blocking_wait(timeout: float) -> None:
+        entered_tail.set()
+        release_tail.wait(timeout)
+
+    monkeypatch.setattr(es._callback_wrapper, "wait_for_pending", _blocking_wait)
+
+    # Turn 1: the agent answers "first", finishes (FINISHED), then the run
+    # task parks in our blocking wait_for_pending().
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="first")]), run=True
+    )
+    assert await asyncio.to_thread(entered_tail.wait, 10.0), (
+        "first run never reached its wait_for_pending tail"
+    )
+    first_run_task = es._run_task
+    assert first_run_task is not None
+    assert parent_llm._call_count == 1
+    assert await es._get_execution_status() == ConversationExecutionStatus.FINISHED
+
+    # Turn 2 arrives DURING the tail: send_message appends it and resets the
+    # terminal status to IDLE, then run() is rejected (task not done) and
+    # suppressed. Nothing runs yet.
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="second")]), run=True
+    )
+    assert parent_llm._call_count == 1, "second turn ran before the tail cleared?!"
+    assert es._run_task is first_run_task, "a second run started concurrently"
+
+    # Release the tail; the first run task finishes and clears _run_task.
+    release_tail.set()
+    await first_run_task
+
+    # The second message must now get processed. Without the _run_and_publish
+    # re-arm it is stranded (call_count stays 1, status stuck IDLE).
+    deadline = time.monotonic() + 5.0
+    while parent_llm._call_count < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+
+    assert parent_llm._call_count == 2, (
+        "second message was stranded — the agent never ran for it after the "
+        f"first run's cleanup tail cleared (call_count={parent_llm._call_count}, "
+        f"status={await es._get_execution_status()})"
+    )
+
+
+@pytest.mark.timeout(30)
+async def test_run_false_message_in_cleanup_tail_is_not_run(
+    real_conversation_service, tmp_path, monkeypatch
+):
+    """A run=False append landing in the cleanup tail must NOT be auto-run.
+
+    Guards the explicit-intent contract behind the re-arm: send_message(
+    run=False) appends without running, and _run_and_publish must not
+    resurrect it just because send_message reset the terminal status to IDLE.
+    """
+    (tmp_path / "ws").mkdir()
+    # Two scripted replies, but only the first turn should ever run.
+    parent_llm = SlowTestLLM.from_messages(
+        [text_message("reply one"), text_message("must not run")],
+        latency_s=0.0,
+    )
+    info = await start_conversation_with_test_llm(
+        real_conversation_service,
+        parent_llm=parent_llm,
+        workspace_dir=str(tmp_path / "ws"),
+        usage_id="tail-run-false",
+        initial_text=None,
+    )
+    es = await real_conversation_service.get_event_service(info.id)
+    assert es is not None and es._callback_wrapper is not None
+
+    entered_tail = threading.Event()
+    release_tail = threading.Event()
+
+    def _blocking_wait(timeout: float) -> None:
+        entered_tail.set()
+        release_tail.wait(timeout)
+
+    monkeypatch.setattr(es._callback_wrapper, "wait_for_pending", _blocking_wait)
+
+    # Turn 1 runs and parks in the wait_for_pending tail.
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="first")]), run=True
+    )
+    assert await asyncio.to_thread(entered_tail.wait, 10.0), (
+        "first run never reached its wait_for_pending tail"
+    )
+    first_run_task = es._run_task
+    assert first_run_task is not None
+    assert parent_llm._call_count == 1
+
+    # Append a message with run=False during the tail: the caller explicitly
+    # does NOT want a run. It resets the terminal status to IDLE but must not
+    # set the re-run flag.
+    await es.send_message(
+        Message(role="user", content=[TextContent(text="just append")]), run=False
+    )
+    assert es._rerun_requested is False
+
+    # Release the tail and let the run task settle; nothing should re-run.
+    release_tail.set()
+    await first_run_task
+    await asyncio.sleep(0.3)  # give any erroneous re-arm a chance to fire
+
+    assert parent_llm._call_count == 1, (
+        "run=False append in the cleanup tail was unexpectedly run "
+        f"(call_count={parent_llm._call_count})"
+    )
+    assert es._run_task is None
