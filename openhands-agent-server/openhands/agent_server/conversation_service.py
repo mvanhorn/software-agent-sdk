@@ -633,7 +633,9 @@ class ConversationService:
                 if spec.name not in existing_names
             ]
             if new_tools:
-                request.agent.tools = [*request.agent.tools, *new_tools]
+                request.agent = request.agent.model_copy(
+                    update={"tools": [*request.agent.tools, *new_tools]}
+                )
 
         # Register subagent definitions forwarded from the client
         if request.agent_definitions:

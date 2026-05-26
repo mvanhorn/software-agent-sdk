@@ -53,7 +53,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
-from openhands.sdk.tool.client_tool import ClientToolSpec
+from openhands.sdk.tool.client_tool import ClientTool, ClientToolSpec
 from openhands.sdk.utils.redact import http_error_log_content
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -802,6 +802,12 @@ class RemoteConversation(BaseConversation):
             self._id = uuid.UUID(cid)
 
             workspace.register_conversation(str(self._id))
+
+        # Register client tool action types locally so WebSocket events with
+        # ClientAction_* action_type can be deserialized by the event loop.
+        if client_tools:
+            for spec in client_tools:
+                ClientTool.from_spec(spec)
 
         # Initialize the remote state
         self._state = RemoteState(
