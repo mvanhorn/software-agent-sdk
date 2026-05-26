@@ -7,7 +7,7 @@ an acknowledgment observation immediately and the event callback (or WebSocket
 client) can handle the actual execution.
 
 Usage:
-    LLM_API_KEY=... uv run python examples/01_standalone_sdk/50_client_defined_tools.py
+    LLM_API_KEY=... uv run python examples/01_standalone_sdk/51_client_defined_tools.py
 """
 
 import os
