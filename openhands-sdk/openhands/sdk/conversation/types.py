@@ -93,6 +93,23 @@ ConversationObservabilityMetadata = Annotated[
 """Validated dict of Laminar/OTel trace metadata for a conversation."""
 
 
+def _validate_observability_tags(v: Any) -> list[str]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        raise ValueError("Observability tags must be a list")
+    if not all(isinstance(tag, str) for tag in v):
+        raise ValueError("Observability tags must contain only strings")
+    return v
+
+
+ConversationObservabilityTags = Annotated[
+    list[str],
+    BeforeValidator(_validate_observability_tags),
+]
+"""Validated list of Laminar/OTel span tags for a conversation."""
+
+
 class StuckDetectionThresholds(BaseModel):
     """Configuration for stuck detection thresholds.
 

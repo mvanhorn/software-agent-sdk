@@ -185,6 +185,9 @@ def test_conversation_settings_validates_observability_metadata() -> None:
     with pytest.raises(ValidationError):
         ConversationSettings(observability_metadata=[])  # type: ignore[arg-type]
 
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_tags=[1, 2])  # type: ignore[list-item]
+
 
 def test_conversation_settings_model_dump_roundtrip() -> None:
     settings = ConversationSettings(

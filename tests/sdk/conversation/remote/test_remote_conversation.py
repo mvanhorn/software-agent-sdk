@@ -176,6 +176,32 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
+    def test_remote_conversation_sends_observability_fields(self, mock_ws_client):
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+        mock_ws_client.return_value = Mock()
+
+        RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            observability_metadata={"repo": "OpenHands/software-agent-sdk"},
+            observability_tags=["sdk", "remote"],
+        )
+
+        create_call = next(
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST" and call[0][1] == "/api/conversations"
+        )
+        payload = create_call.kwargs["json"]
+        assert payload["observability_metadata"] == {
+            "repo": "OpenHands/software-agent-sdk"
+        }
+        assert payload["observability_tags"] == ["sdk", "remote"]
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
     def test_llm_completion_log_callback_writes_utf8(self, mock_ws_client, tmp_path):
         llm = LLM(
             model="gpt-4o-mini",

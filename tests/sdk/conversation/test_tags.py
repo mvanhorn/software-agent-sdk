@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from openhands.sdk.conversation.types import (
     TAG_VALUE_MAX_LENGTH,
     ConversationObservabilityMetadata,
+    ConversationObservabilityTags,
     ConversationTags,
     _validate_observability_metadata,
     _validate_tags,
@@ -127,3 +128,19 @@ def test_observability_metadata_in_pydantic_model():
 
     with pytest.raises(ValidationError):
         TestModel.model_validate({"observability_metadata": {"nested": {"bad": True}}})
+
+
+def test_observability_tags_in_pydantic_model():
+    from pydantic import BaseModel
+
+    class TestModel(BaseModel):
+        observability_tags: ConversationObservabilityTags = []
+
+    m = TestModel(observability_tags=["repo", "cloud"])
+    assert m.observability_tags == ["repo", "cloud"]
+
+    m = TestModel.model_validate({"observability_tags": None})
+    assert m.observability_tags == []
+
+    with pytest.raises(ValidationError):
+        TestModel.model_validate({"observability_tags": [1, 2]})

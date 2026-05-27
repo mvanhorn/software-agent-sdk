@@ -18,6 +18,7 @@ from openhands.sdk.agent.agent import Agent as Agent
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.types import (
     ConversationObservabilityMetadata,
+    ConversationObservabilityTags,
     ConversationTags,
 )
 from openhands.sdk.hooks import HookConfig
@@ -189,7 +190,7 @@ class StartConversationRequest(BaseModel):
             "be scalars or homogeneous scalar lists supported by OpenTelemetry."
         ),
     )
-    observability_tags: list[str] = Field(
+    observability_tags: ConversationObservabilityTags = Field(
         default_factory=list,
         description="Tags to attach to the conversation root observability span.",
     )
