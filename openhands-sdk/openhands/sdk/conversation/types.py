@@ -1,7 +1,7 @@
 import re
 import uuid
 from collections.abc import Callable, Sequence
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -57,10 +57,12 @@ type TraceMetadataValue = (
 
 
 def _validate_observability_metadata(
-    v: dict[str, TraceMetadataValue] | None,
+    v: Any,
 ) -> dict[str, TraceMetadataValue]:
     if v is None:
         return {}
+    if not isinstance(v, dict):
+        raise ValueError("Observability metadata must be a dictionary")
     for key, value in v.items():
         if not isinstance(key, str) or not key:
             raise ValueError("Observability metadata keys must be non-empty strings")

@@ -33,7 +33,10 @@ from pydantic.fields import FieldInfo
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.conversation.request import SendMessageRequest
-from openhands.sdk.conversation.types import TraceMetadataValue
+from openhands.sdk.conversation.types import (
+    ConversationObservabilityMetadata,
+    TraceMetadataValue,
+)
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
@@ -531,7 +534,7 @@ class ConversationSettings(BaseModel):
         exclude=True,
         description="Repository selected for the conversation.",
     )
-    observability_metadata: dict[str, TraceMetadataValue] | None = Field(
+    observability_metadata: ConversationObservabilityMetadata | None = Field(
         default=None,
         exclude=True,
         description="Trace-level metadata for observability backends.",

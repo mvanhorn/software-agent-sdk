@@ -3,7 +3,7 @@ import warnings
 
 import pytest
 from fastmcp.mcp_config import MCPConfig
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import StartConversationRequest
 from openhands.sdk import (
@@ -173,6 +173,17 @@ def test_conversation_settings_export_schema_groups_sections() -> None:
     assert verification_fields["security_analyzer"].default == "llm"
     assert verification_fields["security_analyzer"].choices[0].value == "llm"
     assert verification_fields["security_analyzer"].depends_on == ["confirmation_mode"]
+
+
+def test_conversation_settings_validates_observability_metadata() -> None:
+    settings = ConversationSettings(observability_metadata={"repo": "OpenHands/sdk"})
+    assert settings.observability_metadata == {"repo": "OpenHands/sdk"}
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_metadata={"": "missing-key"})
+
+    with pytest.raises(ValidationError):
+        ConversationSettings(observability_metadata=[])  # type: ignore[arg-type]
 
 
 def test_conversation_settings_model_dump_roundtrip() -> None:

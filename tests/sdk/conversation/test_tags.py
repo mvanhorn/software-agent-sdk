@@ -103,6 +103,11 @@ def test_validate_observability_metadata_valid():
     assert _validate_observability_metadata(metadata) == metadata
 
 
+def test_validate_observability_metadata_rejects_non_dict():
+    with pytest.raises(ValueError, match="must be a dictionary"):
+        _validate_observability_metadata([])
+
+
 def test_validate_observability_metadata_rejects_nested_values():
     with pytest.raises(ValueError, match="must be a scalar"):
         _validate_observability_metadata({"repo": {"name": "openhands"}})  # type: ignore[dict-item]
