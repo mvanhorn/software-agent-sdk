@@ -1288,6 +1288,7 @@ async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> Non
     llm._is_subscription = True
 
     assert await llm._aget_litellm_api_key_value() == "access-token"
+    assert llm.extra_headers is not None
     assert llm.extra_headers["chatgpt-account-id"] == "account-id"
 
 
