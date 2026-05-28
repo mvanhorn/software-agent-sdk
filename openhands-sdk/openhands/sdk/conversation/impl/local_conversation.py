@@ -592,12 +592,23 @@ class LocalConversation(BaseConversation):
         if final_hook_config is not None:
             # Store final hook_config in state for observability
             self._state.hook_config = final_hook_config
+            hook_persistence_dir = (
+                str(Path(self._state.persistence_dir).parent)
+                if self._state.persistence_dir is not None
+                else None
+            )
 
             self._hook_processor, self._on_event = create_hook_callback(
                 hook_config=final_hook_config,
                 working_dir=str(self.workspace.working_dir),
                 session_id=str(self._state.id),
                 original_callback=self._base_callback,
+                # Resolve lazily: switch_llm()/switch_profile() rebind self.agent,
+                # so agent hooks must read the current LLM at execution time.
+                llm_getter=lambda: self.agent.llm,
+                persistence_dir=hook_persistence_dir,
+                visualizer=self._visualizer,
+                conversation_stats=self._state.stats,
             )
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
