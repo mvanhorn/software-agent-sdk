@@ -62,7 +62,9 @@ async def main(wf):
 The script coordinates sub-agents through the `wf` object. It should not read or
 write files, run shell commands, or perform the engineering work directly.
 Sub-agents should do that work through their normal OpenHands tools and security
-policy.
+policy. Scripts should use only the documented `wf` methods; private `wf`
+attributes are rejected. Large reducer inputs may be truncated before being sent
+to the reducer sub-agent.
 
 Available `wf` methods:
 - `await wf.run_agent(...)`

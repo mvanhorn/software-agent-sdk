@@ -14,7 +14,7 @@ from openhands.tools.workflow import (
     execute_workflow_script,
     validate_workflow_script,
 )
-from openhands.tools.workflow.impl import _format_exception
+from openhands.tools.workflow.impl import _format_exception, _format_value
 
 
 @dataclass
@@ -144,6 +144,27 @@ async def main(wf):
     }
 
 
+def test_workflow_script_can_catch_common_exceptions() -> None:
+    script = """
+async def main(wf):
+    try:
+        raise ValueError("recoverable")
+    except ValueError as exc:
+        return str(exc)
+"""
+
+    assert (
+        execute_workflow_script(script, _context(_FakeTaskManager())) == "recoverable"
+    )
+
+
+def test_format_value_truncates_large_intermediate_results() -> None:
+    value = _format_value("x" * 12_050)
+
+    assert len(value) < 12_100
+    assert value.endswith("[truncated workflow intermediate results]")
+
+
 def test_format_exception_includes_exception_group_details() -> None:
     error = ExceptionGroup(
         "map_agents: one or more sub-agents failed",
@@ -169,6 +190,16 @@ async def main(wf):
 """
 
     with pytest.raises(WorkflowScriptError, match="open"):
+        validate_workflow_script(script)
+
+
+def test_validate_workflow_script_rejects_private_wf_access() -> None:
+    script = """
+async def main(wf):
+    return wf._parent_conversation
+"""
+
+    with pytest.raises(WorkflowScriptError, match="private wf attributes"):
         validate_workflow_script(script)
 
 

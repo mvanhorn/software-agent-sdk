@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _MAX_SCRIPT_CHARS = 20_000
+_MAX_REDUCE_INPUT_CHARS = 12_000
 _UNSAFE_CALLS = frozenset(
     {
         "breakpoint",
@@ -216,8 +217,15 @@ def _render_template(
 
 def _format_value(value: Any) -> str:
     if isinstance(value, str):
-        return value
-    return jsonlib.dumps(value, indent=2, default=str)
+        text = value
+    else:
+        text = jsonlib.dumps(value, indent=2, default=str)
+    if len(text) <= _MAX_REDUCE_INPUT_CHARS:
+        return text
+    return (
+        text[:_MAX_REDUCE_INPUT_CHARS]
+        + "\n... [truncated workflow intermediate results]"
+    )
 
 
 def validate_workflow_script(script: str) -> None:
@@ -254,6 +262,14 @@ def validate_workflow_script(script: str) -> None:
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             raise WorkflowScriptError(
                 "Workflow scripts may not access dunder attributes"
+            )
+        if (
+            isinstance(node, ast.Attribute)
+            and _attribute_root_name(node) == "wf"
+            and node.attr.startswith("_")
+        ):
+            raise WorkflowScriptError(
+                "Workflow scripts may not access private wf attributes"
             )
         if (
             isinstance(node, ast.Attribute)
@@ -323,8 +339,11 @@ def _safe_globals() -> dict[str, Any]:
         "bool": bool,
         "dict": dict,
         "enumerate": enumerate,
+        "Exception": Exception,
         "float": float,
+        "IndexError": IndexError,
         "int": int,
+        "KeyError": KeyError,
         "len": len,
         "list": list,
         "max": max,
@@ -333,9 +352,12 @@ def _safe_globals() -> dict[str, Any]:
         "round": round,
         "set": set,
         "sorted": sorted,
+        "RuntimeError": RuntimeError,
         "str": str,
         "sum": sum,
         "tuple": tuple,
+        "TypeError": TypeError,
+        "ValueError": ValueError,
         "zip": zip,
     }
     return {"__builtins__": safe_builtins}
