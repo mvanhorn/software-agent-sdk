@@ -538,6 +538,105 @@ def test_patch_settings_empty_payload_returns_400(client_with_settings):
     assert "At least one of" in response.json()["detail"]
 
 
+def test_patch_settings_acp_env_null_value_deletes_key(client_with_settings):
+    """PATCH ``agent_settings_diff.acp_env: {K: null}`` removes that key.
+
+    The deep-merge has no "unset" semantic for dict-value entries, so the
+    router pre-processes null-valued ``acp_env`` entries as deletions
+    before the merge. Sibling keys must survive untouched, and the
+    deleted key must not reappear on a subsequent GET.
+    """
+    # Seed two env vars on an ACP agent.
+    seed = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "claude-code",
+                "acp_command": [],
+                "acp_env": {
+                    "ANTHROPIC_API_KEY": "sk-keep",
+                    "OPENAI_API_KEY": "sk-drop",
+                },
+            }
+        },
+    )
+    assert seed.status_code == 200, seed.text
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": {"OPENAI_API_KEY": None}}},
+    )
+    assert response.status_code == 200, response.text
+
+    get_response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    assert get_response.status_code == 200
+    env = get_response.json()["agent_settings"]["acp_env"]
+    assert env == {"ANTHROPIC_API_KEY": "sk-keep"}
+
+
+def test_patch_settings_acp_env_null_value_on_missing_key_is_a_noop(
+    client_with_settings,
+):
+    """Deleting a key that isn't there must not 422 — it's a no-op."""
+    client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "claude-code",
+                "acp_command": [],
+                "acp_env": {"ANTHROPIC_API_KEY": "sk-keep"},
+            }
+        },
+    )
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={"agent_settings_diff": {"acp_env": {"NOPE": None}}},
+    )
+    assert response.status_code == 200, response.text
+
+    get_response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    env = get_response.json()["agent_settings"]["acp_env"]
+    assert env == {"ANTHROPIC_API_KEY": "sk-keep"}
+
+
+def test_patch_settings_acp_env_mixed_add_and_delete(client_with_settings):
+    """One PATCH can both add a new key and delete an existing key."""
+    client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "agent_kind": "acp",
+                "acp_server": "claude-code",
+                "acp_command": [],
+                "acp_env": {"OLD_KEY": "old-value"},
+            }
+        },
+    )
+
+    response = client_with_settings.patch(
+        "/api/settings",
+        json={
+            "agent_settings_diff": {
+                "acp_env": {"OLD_KEY": None, "NEW_KEY": "new-value"}
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    get_response = client_with_settings.get(
+        "/api/settings", headers={"X-Expose-Secrets": "plaintext"}
+    )
+    env = get_response.json()["agent_settings"]["acp_env"]
+    assert env == {"NEW_KEY": "new-value"}
+
+
 def test_patch_settings_deep_merges(client_with_settings):
     """PATCH /api/settings deep-merges with existing settings."""
     # First update: set model

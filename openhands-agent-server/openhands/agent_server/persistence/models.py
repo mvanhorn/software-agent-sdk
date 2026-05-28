@@ -53,6 +53,45 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+def _apply_acp_env_deletes(
+    agent_update: dict[str, Any], agent_base: dict[str, Any]
+) -> dict[str, Any]:
+    """Honour ``acp_env: {KEY: None}`` as ``"delete KEY"`` in a PATCH diff.
+
+    Plain ``_deep_merge`` has no "unset" semantic for dict-value entries:
+    a null overlay value would survive the merge and then fail validation
+    against ``ACPAgentSettings.acp_env: dict[str, str]``. Frontends need a
+    PATCH-shaped way to remove a single env-var without round-tripping
+    the entire map, so this pre-processing step:
+
+      1. Strips ``None``-valued keys from ``agent_update["acp_env"]`` so
+         only positive add/replace entries remain to merge.
+      2. Strips the same keys from ``agent_base["acp_env"]`` so the
+         deletion sticks after the merge.
+
+    Returns the (possibly rewritten) ``agent_update`` mapping. ``agent_base``
+    is mutated in place when deletions apply.
+    """
+    env_diff = agent_update.get("acp_env")
+    if not isinstance(env_diff, dict):
+        return agent_update
+
+    delete_keys = [k for k, v in env_diff.items() if v is None]
+    if not delete_keys:
+        return agent_update
+
+    positive_env_diff = {k: v for k, v in env_diff.items() if v is not None}
+    rewritten = {**agent_update, "acp_env": positive_env_diff}
+
+    base_env = agent_base.get("acp_env")
+    if isinstance(base_env, dict):
+        agent_base["acp_env"] = {
+            k: v for k, v in base_env.items() if k not in delete_keys
+        }
+
+    return rewritten
+
+
 PERSISTED_SETTINGS_SCHEMA_VERSION = 1
 
 
@@ -132,12 +171,11 @@ class PersistedSettings(BaseModel):
 
         try:
             if isinstance(agent_update, dict):
-                agent_merged = _deep_merge(
-                    self.agent_settings.model_dump(
-                        mode="json", context={"expose_secrets": "plaintext"}
-                    ),
-                    agent_update,
+                agent_base = self.agent_settings.model_dump(
+                    mode="json", context={"expose_secrets": "plaintext"}
                 )
+                agent_update = _apply_acp_env_deletes(agent_update, agent_base)
+                agent_merged = _deep_merge(agent_base, agent_update)
                 try:
                     new_agent = validate_agent_settings(agent_merged)
                 except Exception as e:
