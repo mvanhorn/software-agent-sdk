@@ -114,6 +114,11 @@ def test_validate_observability_metadata_rejects_nested_values():
         _validate_observability_metadata({"repo": {"name": "openhands"}})  # type: ignore[dict-item]
 
 
+def test_validate_observability_metadata_rejects_mixed_numeric_list():
+    with pytest.raises(ValueError, match="mixed numeric types"):
+        _validate_observability_metadata({"scores": [1, 1.5]})  # type: ignore[dict-item]
+
+
 def test_observability_metadata_in_pydantic_model():
     from pydantic import BaseModel
 

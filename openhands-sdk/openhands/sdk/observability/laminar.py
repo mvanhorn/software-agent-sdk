@@ -277,8 +277,8 @@ class RootSpan:
                     if user_id:
                         Laminar.set_trace_user_id(user_id)
                     if metadata:
-                        # cast: list[T] satisfies Sequence[T]; dict invariance
-                        # prevents direct assignment without the explicit cast.
+                        # dict is invariant: dict[str, TraceMetadataValue] is
+                        # not assignable to dict[str, Any] without a cast.
                         Laminar.set_trace_metadata(cast(dict[str, Any], metadata))
                     if tags:
                         Laminar.set_span_tags(tags)
