@@ -768,6 +768,7 @@ class RemoteConversation(BaseConversation):
                 "tags": tags or {},
                 "observability_metadata": observability_metadata or {},
                 "observability_tags": observability_tags or [],
+                "user_id": user_id,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize

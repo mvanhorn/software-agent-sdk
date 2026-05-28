@@ -186,6 +186,7 @@ class TestRemoteConversation:
             workspace=self.workspace,
             observability_metadata={"repo": "OpenHands/software-agent-sdk"},
             observability_tags=["sdk", "remote"],
+            user_id="test-user-42",
         )
 
         create_call = next(
@@ -198,6 +199,7 @@ class TestRemoteConversation:
             "repo": "OpenHands/software-agent-sdk"
         }
         assert payload["observability_tags"] == ["sdk", "remote"]
+        assert payload["user_id"] == "test-user-42"
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"

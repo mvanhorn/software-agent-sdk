@@ -265,7 +265,11 @@ class RootSpan:
             # These trace/span helpers require an active span; briefly enter
             # the span context to apply conversation-level observability data.
             with contextlib.suppress(Exception):
-                with Laminar.use_span(self.span):
+                with Laminar.use_span(
+                    self.span,
+                    record_exception=False,
+                    set_status_on_exception=False,
+                ):
                     if session_id:
                         Laminar.set_trace_session_id(session_id)
                     if user_id:

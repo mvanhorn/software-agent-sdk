@@ -513,7 +513,11 @@ def test_root_span_sets_trace_metadata_and_tags():
         )
 
         mock_laminar.start_span.assert_called_once_with("conversation")
-        mock_laminar.use_span.assert_called_once_with(fake_span)
+        mock_laminar.use_span.assert_called_once_with(
+            fake_span,
+            record_exception=False,
+            set_status_on_exception=False,
+        )
         mock_laminar.set_trace_session_id.assert_called_once_with("session-1")
         mock_laminar.set_trace_metadata.assert_called_once_with(
             {"repo_name": "OpenHands/software-agent-sdk"}
