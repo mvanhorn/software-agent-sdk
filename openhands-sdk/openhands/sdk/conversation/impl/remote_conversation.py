@@ -765,9 +765,13 @@ class RemoteConversation(BaseConversation):
                 # Include hook_config for server-side hooks
                 "hook_config": hook_config.model_dump() if hook_config else None,
                 # Include tags and observability metadata if provided
-                "tags": tags or {},
-                "observability_metadata": observability_metadata or {},
-                "observability_tags": observability_tags or [],
+                "tags": tags if tags is not None else {},
+                "observability_metadata": observability_metadata
+                if observability_metadata is not None
+                else {},
+                "observability_tags": observability_tags
+                if observability_tags is not None
+                else [],
                 "user_id": user_id,
             }
             if stuck_detection_thresholds is not None:
