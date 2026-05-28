@@ -899,6 +899,8 @@ def create_subscription_llm_from_config(llm: LLM) -> LLM:
     """Create a runtime subscription LLM from a serialized LLM config."""
     if getattr(llm, "auth_type", "api_key") != "subscription":
         return llm
+    if llm.is_subscription:
+        return llm
 
     vendor = llm.subscription_vendor or "openai"
     if vendor != "openai":

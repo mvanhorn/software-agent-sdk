@@ -121,6 +121,7 @@ def test_openai_subscription_status_endpoint_does_not_return_tokens(
 
     class FakeAuth:
         async def refresh_if_needed(self):
+            assert llm_router._OPENAI_DEVICE_LOGIN_LOCK.locked()
             return OAuthCredentials(
                 vendor="openai",
                 access_token="access-token",

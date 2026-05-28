@@ -171,11 +171,12 @@ async def list_openai_subscription_models() -> SubscriptionModelsResponse:
 async def get_openai_subscription_status() -> SubscriptionStatusResponse:
     """Return safe ChatGPT subscription connection state without tokens."""
     auth = _get_openai_subscription_auth()
-    try:
-        await auth.refresh_if_needed()
-    except RuntimeError:
-        return SubscriptionStatusResponse(connected=False)
-    return _status_from_auth(auth)
+    async with _OPENAI_DEVICE_LOGIN_LOCK:
+        try:
+            await auth.refresh_if_needed()
+        except RuntimeError:
+            return SubscriptionStatusResponse(connected=False)
+        return _status_from_auth(auth)
 
 
 @llm_router.post(

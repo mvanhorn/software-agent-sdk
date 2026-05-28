@@ -1,5 +1,4 @@
 import json
-import warnings
 
 import pytest
 from fastmcp.mcp_config import MCPConfig
@@ -666,23 +665,25 @@ def test_acp_create_agent_passes_resolved_env_and_agent_context() -> None:
     assert agent.agent_context == context
 
 
-def test_llm_agent_settings_deprecated_alias_emits_warning() -> None:
-    """Importing ``LLMAgentSettings`` emits DeprecationWarning at import time."""
+def test_llm_agent_settings_public_alias_removed() -> None:
+    """The deprecated ``LLMAgentSettings`` public import aliases were removed in
+    v1.24.0; the class itself is retained (internal-only) for the union."""
+    import openhands.sdk as _sdk_mod
     import openhands.sdk.settings as _settings_mod
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        cls = getattr(_settings_mod, "LLMAgentSettings")
+    with pytest.raises(AttributeError):
+        getattr(_settings_mod, "LLMAgentSettings")
+    with pytest.raises(AttributeError):
+        getattr(_sdk_mod, "LLMAgentSettings")
 
-    assert any("LLMAgentSettings" in str(w.message) for w in caught), (
-        f"expected deprecation warning, got: {[str(w.message) for w in caught]}"
-    )
-    assert issubclass(cls, OpenHandsAgentSettings)
-    # Construction itself does not emit a second warning.
-    settings = cls(llm=LLM(model="test-model"))
+    # The class is still reachable at its canonical internal location and keeps
+    # agent_kind="llm" so the discriminated union deserializes legacy payloads
+    # and the API-breakage checker sees no field-value change.
+    from openhands.sdk.settings.model import LLMAgentSettings
+
+    assert issubclass(LLMAgentSettings, OpenHandsAgentSettings)
+    settings = LLMAgentSettings(llm=LLM(model="test-model"))
     assert isinstance(settings, OpenHandsAgentSettings)
-    # LLMAgentSettings keeps its own agent_kind="llm" so the API-breakage
-    # checker sees no field-value change vs the published PyPI release.
     assert settings.agent_kind == "llm"
     assert settings.llm.model == "test-model"
 
@@ -1205,6 +1206,89 @@ def test_llm_from_persisted_rehydrates_subscription_runtime(monkeypatch) -> None
 
     assert loaded is runtime_llm
     assert loaded.is_subscription is True
+
+
+def test_llm_load_from_env_rehydrates_subscription_runtime(monkeypatch) -> None:
+    from openhands.sdk.llm.auth import openai
+
+    runtime_llm = LLM(model="openai/gpt-5.2-codex", auth_type="subscription")
+    runtime_llm._is_subscription = True
+
+    def fake_create_subscription_llm_from_config(llm: LLM) -> LLM:
+        assert llm.auth_type == "subscription"
+        assert llm.subscription_vendor == "openai"
+        assert llm.model == "gpt-5.2-codex"
+        return runtime_llm
+
+    monkeypatch.setenv("LLM_MODEL", "gpt-5.2-codex")
+    monkeypatch.setenv("LLM_AUTH_TYPE", "subscription")
+    monkeypatch.setenv("LLM_SUBSCRIPTION_VENDOR", "openai")
+    monkeypatch.setattr(
+        openai,
+        "create_subscription_llm_from_config",
+        fake_create_subscription_llm_from_config,
+    )
+
+    loaded = LLM.load_from_env()
+
+    assert loaded is runtime_llm
+    assert loaded.is_subscription is True
+
+
+def test_create_subscription_llm_from_config_preserves_runtime_llm(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+
+    class UnexpectedAuth:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("runtime subscription LLM should not be rehydrated")
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", UnexpectedAuth)
+    runtime_llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    runtime_llm._is_subscription = True
+
+    assert openai_auth.create_subscription_llm_from_config(runtime_llm) is runtime_llm
+
+
+@pytest.mark.asyncio
+async def test_async_subscription_api_key_uses_async_refresh(monkeypatch) -> None:
+    import openhands.sdk.llm.auth.openai as openai_auth
+    from openhands.sdk.llm.auth.credentials import OAuthCredentials
+
+    credentials = OAuthCredentials(
+        vendor="openai",
+        access_token="access-token",
+        refresh_token="refresh-token",
+        expires_at=4_102_444_800_000,
+    )
+
+    class FakeAuth:
+        def __init__(self, credential_store=None):
+            self.credential_store = credential_store
+
+        async def refresh_if_needed(self):
+            return credentials
+
+        def refresh_if_needed_sync(self):
+            raise AssertionError("async transport must not sync-refresh credentials")
+
+        def extract_chatgpt_account_id(self, refreshed_credentials):
+            assert refreshed_credentials is credentials
+            return "account-id"
+
+    monkeypatch.setattr(openai_auth, "OpenAISubscriptionAuth", FakeAuth)
+    llm = LLM(
+        model="openai/gpt-5.2-codex",
+        auth_type="subscription",
+        subscription_vendor="openai",
+    )
+    llm._is_subscription = True
+
+    assert await llm._aget_litellm_api_key_value() == "access-token"
+    assert llm.extra_headers["chatgpt-account-id"] == "account-id"
 
 
 def test_openai_subscription_create_llm_serializes_subscription_auth(
