@@ -23,6 +23,7 @@ from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.exceptions import LLMAuthenticationError
 from openhands.sdk.testing import TestLLM
 
+
 _RAW_LITELLM_ERROR = (
     "litellm.AuthenticationError: AnthropicException - "
     '{"type":"error","error":{"type":"authentication_error",'
