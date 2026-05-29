@@ -745,7 +745,9 @@ def test_start_conversation_accepts_acp_agent_settings(
         assert request.agent.kind == "ACPAgent"
         assert request.agent.acp_command == ["echo", "settings"]
         assert request.agent.acp_args == ["--verbose"]
-        assert request.agent.acp_env == {"OPENAI_API_KEY": "sk-acp-env"}
+        assert {
+            k: v.get_secret_value() for k, v in request.agent.acp_env.items()
+        } == {"OPENAI_API_KEY": "sk-acp-env"}
         assert request.agent.acp_model == "acp-test-model"
         assert request.agent.acp_session_mode == "bypassPermissions"
         assert request.agent.acp_prompt_timeout == 123.0
