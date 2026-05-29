@@ -243,6 +243,8 @@ def _format_value(value: Any) -> str:
         text = jsonlib.dumps(value, indent=2, default=str)
     if len(text) <= _MAX_REDUCE_INPUT_CHARS:
         return text
+    # Character-boundary truncation can split mid-token in JSON; element-boundary
+    # truncation for list/dict inputs would be cleaner but is deferred post-MVP.
     return (
         text[:_MAX_REDUCE_INPUT_CHARS]
         + "\n... [truncated workflow intermediate results]"

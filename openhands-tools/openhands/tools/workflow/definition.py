@@ -80,6 +80,10 @@ Use the same type names you registered when building your agent.
 Scripts must use only the documented `wf` methods listed above; calling
 `wf.close()` or any other undocumented attribute is not supported.
 
+`print()` is available for debugging but writes to the server logs, not to
+the workflow observation seen by the LLM; use the return value of `main()` to
+surface results.
+
 `map_agents` accepts either a callable prompt, such as
 `lambda item: f"Review this finding: {item}"`, or a string template containing
 `{item}`.
