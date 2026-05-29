@@ -74,6 +74,9 @@ Available `wf` methods:
   description=None)`
 - `wf.flatten(values)` — flatten one level of nesting (not recursive)
 
+`subagent_type` must be a sub-agent type registered in the parent application.
+Use the same type names you registered when building your agent.
+
 `map_agents` accepts either a callable prompt, such as
 `lambda item: f"Review this finding: {item}"`, or a string template containing
 `{item}`.

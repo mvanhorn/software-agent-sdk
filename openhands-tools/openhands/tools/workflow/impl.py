@@ -91,6 +91,7 @@ class WorkflowContext:
         else:
             self._manager = manager
         self._semaphore: asyncio.Semaphore | None = None
+        self._closed = False
 
     @property
     def _default_semaphore(self) -> asyncio.Semaphore:
@@ -211,6 +212,9 @@ class WorkflowContext:
         return flattened
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._manager.close()
 
 
@@ -266,7 +270,13 @@ def validate_workflow_script(script: str) -> None:
         )
 
     main_def = main_defs[0]
-    if len(main_def.args.args) != 1 or main_def.args.args[0].arg != "wf":
+    if (
+        len(main_def.args.args) != 1
+        or main_def.args.args[0].arg != "wf"
+        or main_def.args.kwonlyargs
+        or main_def.args.vararg
+        or main_def.args.kwarg
+    ):
         raise WorkflowScriptError("Workflow entry point must be `async def main(wf):`")
 
     for node in ast.walk(tree):
