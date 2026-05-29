@@ -84,6 +84,12 @@ Scripts must use only the documented `wf` methods listed above; calling
 the workflow observation seen by the LLM; use the return value of `main()` to
 surface results.
 
+If one or more `map_agents` items fail, the whole call raises an
+`ExceptionGroup`. Workflow scripts cannot catch `ExceptionGroup` because it is
+not included in `_safe_globals`; the error propagates to the parent agent as an
+error observation. To handle partial failures, design sub-agent prompts to
+return an error sentinel value instead of raising.
+
 `map_agents` accepts either a callable prompt, such as
 `lambda item: f"Review this finding: {item}"`, or a string template containing
 `{item}`.

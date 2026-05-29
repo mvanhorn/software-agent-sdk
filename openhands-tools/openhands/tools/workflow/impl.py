@@ -194,8 +194,8 @@ class WorkflowContext:
         """Run a single reducer sub-agent with serialized intermediate results.
 
         Delegates to ``run_agent``, which acquires ``_default_semaphore``.
-        Counts against the shared concurrency limit if called while a
-        ``map_agents`` operation is in progress.
+        Workflow scripts always await operations sequentially, so the semaphore
+        is always fully available when ``reduce_agent`` is called.
         """
         return await self.run_agent(
             prompt=f"{prompt}\n\nInput:\n{_format_value(items)}",
