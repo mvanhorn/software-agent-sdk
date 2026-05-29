@@ -233,7 +233,10 @@ def _render_required_template(template: Callable[[Any], str] | str, item: Any) -
             "map_agents string template does not contain '{item}'; "
             "all sub-agents will receive the same prompt."
         )
-    return template.replace("{item}", str(item))
+    # Use json.dumps for non-str items so dicts/lists are consistently serialised
+    # with double-quoted JSON syntax, matching the reduce_agent serialisation path.
+    serialised = item if isinstance(item, str) else jsonlib.dumps(item, default=str)
+    return template.replace("{item}", serialised)
 
 
 def _render_template(
@@ -403,6 +406,7 @@ def _safe_globals() -> dict[str, Any]:
         "TypeError": TypeError,
         "ValueError": ValueError,
         "zip": zip,
+        "format": format,
     }
     return {"__builtins__": safe_builtins}
 
