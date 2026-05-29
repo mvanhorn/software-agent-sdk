@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 
 _MAX_SCRIPT_CHARS = 20_000
 _MAX_REDUCE_INPUT_CHARS = 12_000
+_WORKFLOW_TIMEOUT_SECONDS = 3600.0  # 1 hour; prevents indefinitely hung workflows
 _UNSAFE_CALLS = frozenset(
     {
         "breakpoint",
@@ -278,20 +279,11 @@ def validate_workflow_script(script: str) -> None:
             and _attribute_root_name(node) in _UNSAFE_ATTRIBUTE_ROOTS
         ):
             raise WorkflowScriptError("Workflow scripts may not access unsafe modules")
-        if isinstance(node, ast.Call):
-            call_name = _call_name(node.func)
-            if call_name in _UNSAFE_CALLS:
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id in _UNSAFE_CALLS:
                 raise WorkflowScriptError(
-                    f"Workflow scripts may not call `{call_name}`"
+                    f"Workflow scripts may not call `{node.func.id}`"
                 )
-
-
-def _call_name(func: ast.expr) -> str | None:
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    return None
 
 
 def _attribute_root_name(node: ast.Attribute) -> str | None:
@@ -320,7 +312,17 @@ def execute_workflow_script(script: str, context: WorkflowContext) -> Any:
     main = namespace.get("main")
     if not inspect.iscoroutinefunction(main):
         raise WorkflowScriptError("Workflow entry point must be async")
-    return asyncio.run(main(context))
+
+    async def _run_with_timeout() -> Any:
+        async with asyncio.timeout(_WORKFLOW_TIMEOUT_SECONDS):
+            return await main(context)
+
+    try:
+        return asyncio.run(_run_with_timeout())
+    except TimeoutError:
+        raise WorkflowScriptError(
+            f"Workflow timed out after {_WORKFLOW_TIMEOUT_SECONDS:.0f} seconds"
+        ) from None
 
 
 def _format_exception(error: Exception) -> str:
@@ -361,7 +363,6 @@ def _safe_globals() -> dict[str, Any]:
         "str": str,
         "sum": sum,
         "tuple": tuple,
-        "type": type,
         "TypeError": TypeError,
         "ValueError": ValueError,
         "zip": zip,
