@@ -219,6 +219,16 @@ async def main(wf):
         validate_workflow_script(script)
 
 
+def test_validate_workflow_script_rejects_wf_close() -> None:
+    script = """
+async def main(wf):
+    wf.close()
+"""
+
+    with pytest.raises(WorkflowScriptError, match="wf.close"):
+        validate_workflow_script(script)
+
+
 def test_validate_workflow_script_rejects_unsafe_module_access() -> None:
     script = """
 async def main(wf):

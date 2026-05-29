@@ -297,10 +297,11 @@ def validate_workflow_script(script: str) -> None:
         if (
             isinstance(node, ast.Attribute)
             and _attribute_root_name(node) == "wf"
-            and node.attr.startswith("_")
+            and (node.attr.startswith("_") or node.attr == "close")
         ):
             raise WorkflowScriptError(
                 "Workflow scripts may not access private wf attributes"
+                " or call wf.close()"
             )
         if (
             isinstance(node, ast.Attribute)
