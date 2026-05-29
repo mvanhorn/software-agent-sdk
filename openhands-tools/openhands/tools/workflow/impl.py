@@ -119,6 +119,9 @@ class WorkflowContext:
         subagent_type: str,
         description: str | None,
     ) -> str:
+        # Note: `_TaskStarter.start_task` accepts a `resume` parameter, but
+        # workflow sub-agents are always fresh tasks; resumption is intentionally
+        # not exposed through WorkflowContext in the MVP.
         if self._closed:
             raise WorkflowScriptError("WorkflowContext is already closed")
         task = await asyncio.to_thread(
@@ -225,6 +228,11 @@ def _render_required_template(template: Callable[[Any], str] | str, item: Any) -
         return str(template(item))
     # Plain replace avoids Python's format mini-language attribute traversal
     # (e.g. "{item._manager}"), which would bypass the AST private-attribute guard.
+    if "{item}" not in template:
+        logger.debug(
+            "map_agents string template does not contain '{item}'; "
+            "all sub-agents will receive the same prompt."
+        )
     return template.replace("{item}", str(item))
 
 
