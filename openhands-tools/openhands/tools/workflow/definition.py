@@ -33,7 +33,10 @@ class WorkflowAction(Action):
         default=8,
         ge=1,
         le=64,
-        description="Maximum number of sub-agent tasks to run concurrently.",
+        description=(
+            "Maximum number of sub-agent tasks to run concurrently. "
+            "Consider 2–4 for LLM-heavy workflows to avoid hitting API rate limits."
+        ),
     )
 
 

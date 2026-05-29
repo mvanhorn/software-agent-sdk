@@ -403,6 +403,10 @@ def _safe_globals() -> dict[str, Any]:
         "str": str,
         "sum": sum,
         "tuple": tuple,
+        # type() is included for 1-arg introspection (e.g. type(x).__name__); the
+        # 3-arg class-creation form remains safe because all method bodies execute in
+        # the same restricted globals and cannot access unsafe builtins or modules.
+        "type": type,
         "TypeError": TypeError,
         "ValueError": ValueError,
         "zip": zip,
