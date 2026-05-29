@@ -11,10 +11,13 @@ from openhands.tools.workflow import (
     WorkflowContext,
     WorkflowExecutor,
     WorkflowScriptError,
+)
+from openhands.tools.workflow.impl import (
+    _format_exception,
+    _format_value,
     execute_workflow_script,
     validate_workflow_script,
 )
-from openhands.tools.workflow.impl import _format_exception, _format_value
 
 
 @dataclass
@@ -85,6 +88,17 @@ async def main(wf):
         expected_reduce_prompt,
     ]
     assert manager.descriptions == ["job alpha", "job beta", "final summary"]
+
+
+def test_run_agent_returns_task_result() -> None:
+    manager = _FakeTaskManager()
+    script = """
+async def main(wf):
+    return await wf.run_agent("do the thing", subagent_type="analyst")
+"""
+    result = execute_workflow_script(script, _context(manager))
+    assert result == "result:do the thing"
+    assert manager.prompts == ["analyst: do the thing"]
 
 
 def test_map_agents_uses_context_default_concurrency_when_none_given() -> None:
