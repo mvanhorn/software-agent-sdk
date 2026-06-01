@@ -351,30 +351,25 @@ def _mcp_config_to_acp_servers(
                 HttpHeader(name=str(k), value=str(v))
                 for k, v in (spec.get("headers") or {}).items()
             ]
-            transport = str(spec.get("transport") or "http").lower()
-            if transport == "sse":
-                if not sse_ok:
-                    logger.warning(
-                        "ACP server does not advertise SSE MCP support; "
-                        "dropping MCP server %r (%s)",
-                        name,
-                        url,
-                    )
-                    continue
+            is_sse = str(spec.get("transport") or "http").lower() == "sse"
+            if not (sse_ok if is_sse else http_ok):
+                logger.warning(
+                    "ACP server does not advertise %s MCP support; "
+                    "dropping MCP server %r (%s)",
+                    "SSE" if is_sse else "HTTP",
+                    name,
+                    url,
+                )
+                continue
+            # Construct each transport explicitly so the ``type`` literal stays
+            # narrow (the union's two arms require distinct ``Literal``s).
+            if is_sse:
                 result.append(
                     SseMcpServer(
                         type="sse", name=str(name), url=str(url), headers=headers
                     )
                 )
             else:
-                if not http_ok:
-                    logger.warning(
-                        "ACP server does not advertise HTTP MCP support; "
-                        "dropping MCP server %r (%s)",
-                        name,
-                        url,
-                    )
-                    continue
                 result.append(
                     HttpMcpServer(
                         type="http", name=str(name), url=str(url), headers=headers
