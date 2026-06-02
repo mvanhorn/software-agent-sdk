@@ -129,6 +129,14 @@ MODELS = {
             "model": "litellm_proxy/anthropic/claude-opus-4-7",
         },
     },
+    # https://www.anthropic.com/news/claude-opus-4-8
+    "claude-opus-4-8": {
+        "id": "claude-opus-4-8",
+        "display_name": "Claude Opus 4.8",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-8",
+        },
+    },
     "claude-sonnet-4-6": {
         "id": "claude-sonnet-4-6",
         "display_name": "Claude Sonnet 4.6",
@@ -326,6 +334,17 @@ MODELS = {
         "llm_config": {
             "model": "litellm_proxy/nvidia/nemotron-3-super-120b-a12b",
             "temperature": 0.0,
+        },
+    },
+    # https://developer.nvidia.com/nemotron
+    # NVIDIA recommends temperature=1.0 and top_p=0.95 for all Nemotron 3 models.
+    "nemotron-3-ultra-550b-a55b": {
+        "id": "nemotron-3-ultra-550b-a55b",
+        "display_name": "NVIDIA Nemotron-3 Ultra 550B",
+        "llm_config": {
+            "model": "litellm_proxy/nvidia/nemotron-3-ultra-550b-a55b",
+            "temperature": 1.0,
+            "top_p": 0.95,
         },
     },
     "converse-nemotron-super-3-120b": {
