@@ -55,7 +55,7 @@ jobs:
     issue-duplicate-check:
         if: |
             github.event_name == 'issues' ||
-            (github.event_name == 'workflow_dispatch' && inputs.mode == 'issue-check' && inputs.issue_number != null)
+            (github.event_name == 'workflow_dispatch' && inputs.mode == 'issue-check' && inputs.issue_number != '')
         runs-on: ubuntu-latest
         timeout-minutes: 35
         concurrency:
