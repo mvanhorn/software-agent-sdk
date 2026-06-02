@@ -698,3 +698,14 @@ def test_claude_opus_4_8_config():
     assert model["id"] == "claude-opus-4-8"
     assert model["display_name"] == "Claude Opus 4.8"
     assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-8"
+
+
+def test_minimax_m3_config():
+    """Test that minimax-m3 has correct configuration."""
+    model = MODELS["minimax-m3"]
+
+    assert model["id"] == "minimax-m3"
+    assert model["display_name"] == "MiniMax M3"
+    assert model["llm_config"]["model"] == "litellm_proxy/minimax/MiniMax-M3"
+    assert model["llm_config"]["temperature"] == 1.0
+    assert model["llm_config"]["top_p"] == 0.95

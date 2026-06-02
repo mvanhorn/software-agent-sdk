@@ -242,6 +242,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    "minimax-m3": {
+        "id": "minimax-m3",
+        "display_name": "MiniMax M3",
+        "llm_config": {
+            "model": "litellm_proxy/minimax/MiniMax-M3",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
