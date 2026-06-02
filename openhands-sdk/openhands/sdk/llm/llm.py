@@ -1302,6 +1302,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     tools,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=_fb_token,
+                    **_caller_kwargs,
                 ),
             )
 
@@ -1591,6 +1592,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     store,
                     add_security_risk_prediction=add_security_risk_prediction,
                     on_token=_fb_token,
+                    **_caller_kwargs,
                 ),
             )
 
