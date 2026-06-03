@@ -252,6 +252,24 @@ class ACPProviderInfo:
     callers constructing this dataclass positionally keep working.
     """
 
+    binary_name: str | None = field(default=None, compare=False)
+    """Name of the pinned, pre-installed CLI binary for this provider, if any.
+
+    The agent-server Docker image pre-installs the ACP CLIs at a fixed version
+    and exposes thin wrappers on ``PATH`` (``claude-agent-acp``, ``codex-acp``,
+    ``gemini``). When this binary resolves via :func:`shutil.which`,
+    :meth:`~openhands.sdk.settings.model.ACPAgentSettings.resolve_acp_command`
+    rewrites the provider's ``npx -y <pkg>`` launch command to run the pinned
+    binary directly — reproducible, and free of a runtime npm download — while
+    preserving any trailing args (e.g. gemini's ``--acp``). When the binary is
+    absent (local dev), the ``npx`` command is used unchanged.
+
+    ``None`` for providers without a known pre-installed binary (and implicitly
+    for ``'custom'`` servers, which have no registry entry). Defaults to
+    ``None`` so external callers constructing this dataclass positionally keep
+    working.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Curated ``acp_model`` candidate lists for the built-in providers.
@@ -371,6 +389,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             session_meta_key="claudeCode",
             available_models=_CLAUDE_MODELS,
             default_model="claude-opus-4-7",
+            binary_name="claude-agent-acp",
         ),
         "codex": ACPProviderInfo(
             key="codex",
@@ -386,6 +405,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             available_models=_CODEX_MODELS,
             default_model="gpt-5.5/medium",
             file_secrets=_CODEX_FILE_SECRETS,
+            binary_name="codex-acp",
         ),
         "gemini-cli": ACPProviderInfo(
             key="gemini-cli",
@@ -406,6 +426,7 @@ ACP_PROVIDERS: Mapping[str, ACPProviderInfo] = MappingProxyType(
             # auto-routing.
             default_model="auto-gemini-2.5",
             file_secrets=_GEMINI_FILE_SECRETS,
+            binary_name="gemini",
         ),
     }
 )

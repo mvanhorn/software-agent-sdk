@@ -42,6 +42,8 @@ class TestACPProviderInfo:
         assert info.session_meta_key == "claudeCode"
         assert info.default_model == "claude-opus-4-7"
         assert any(m.id == "claude-opus-4-7" for m in info.available_models)
+        # Pinned binary exposed by the agent-server image wrappers.
+        assert info.binary_name == "claude-agent-acp"
 
     def test_codex_metadata(self):
         info = ACP_PROVIDERS["codex"]
@@ -57,6 +59,7 @@ class TestACPProviderInfo:
         assert info.session_meta_key is None
         assert info.default_model == "gpt-5.5/medium"
         assert any(m.id == "gpt-5.5/medium" for m in info.available_models)
+        assert info.binary_name == "codex-acp"
 
     def test_gemini_cli_metadata(self):
         info = ACP_PROVIDERS["gemini-cli"]
@@ -72,6 +75,9 @@ class TestACPProviderInfo:
         assert info.session_meta_key is None
         assert info.default_model == "auto-gemini-2.5"
         assert any(m.id == "auto-gemini-2.5" for m in info.available_models)
+        # The Gemini CLI's ACP binary is just ``gemini`` (the ``--acp`` flag is
+        # a trailing arg, preserved by resolve_acp_command on rewrite).
+        assert info.binary_name == "gemini"
 
     def test_provider_info_is_frozen(self):
         info = ACP_PROVIDERS["claude-code"]
