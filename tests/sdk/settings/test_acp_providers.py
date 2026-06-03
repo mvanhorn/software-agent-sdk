@@ -221,3 +221,91 @@ class TestBuildSessionModelMeta:
     def test_unknown_agent_returns_empty(self):
         result = build_session_model_meta("unknown-agent", "some-model")
         assert result == {}
+
+
+class TestACPFileSecrets:
+    """The registry declares reserved file-content credential secrets for the
+    providers that authenticate from a file on disk (issue #1020)."""
+
+    def test_claude_code_has_no_file_secrets(self):
+        # Claude Code authenticates via env vars (token / API key) only.
+        assert ACP_PROVIDERS["claude-code"].file_secrets == ()
+
+    def test_codex_auth_json_spec(self):
+        specs = ACP_PROVIDERS["codex"].file_secrets
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.secret_name == "CODEX_AUTH_JSON"
+        assert spec.filename == "auth.json"
+        assert spec.env_var == "CODEX_HOME"
+        assert spec.subdir == "codex"
+        assert spec.env_points_to == "dir"
+
+    def test_gemini_vertex_sa_spec(self):
+        specs = ACP_PROVIDERS["gemini-cli"].file_secrets
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.secret_name == "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+        assert spec.filename == "gcloud-credentials.json"
+        assert spec.env_var == "GOOGLE_APPLICATION_CREDENTIALS"
+        assert spec.subdir == "gemini-cli"
+        assert spec.env_points_to == "file"
+        # Vertex needs a project + location alongside the SA JSON.
+        assert spec.warn_if_unset == ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION")
+
+    def test_default_acp_file_secrets_aggregates_all_providers(self):
+        from openhands.sdk.settings.acp_providers import default_acp_file_secrets
+
+        specs = default_acp_file_secrets()
+        assert {s.secret_name for s in specs} == {
+            "CODEX_AUTH_JSON",
+            "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+        }
+        # Deterministic concatenation in ACP_PROVIDERS registration order
+        # (codex before gemini-cli) — downstream callers can rely on a stable
+        # ordering of the built-in specs.
+        assert specs == (
+            ACP_PROVIDERS["codex"].file_secrets
+            + ACP_PROVIDERS["gemini-cli"].file_secrets
+        )
+
+    def test_file_secret_spec_is_frozen(self):
+        from pydantic import ValidationError
+
+        from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
+
+        spec = ACPFileSecretSpec(
+            secret_name="X", filename="x.json", env_var="X_HOME", subdir="x"
+        )
+        with pytest.raises(ValidationError):
+            spec.secret_name = "Y"  # type: ignore[misc]
+
+    def test_file_secret_spec_rejects_path_traversal(self):
+        from pydantic import ValidationError
+
+        from openhands.sdk.settings.acp_providers import ACPFileSecretSpec
+
+        # filename must be a bare basename.
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="../escape.json", env_var="X", subdir="x"
+            )
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="a/b.json", env_var="X", subdir="x"
+            )
+        # subdir must not escape the acp root.
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="x.json", env_var="X", subdir="../up"
+            )
+        with pytest.raises(ValidationError):
+            ACPFileSecretSpec(
+                secret_name="X", filename="x.json", env_var="X", subdir="/abs"
+            )
+        # "." / whitespace would drop the file straight into the shared acp/ root.
+        for bad in (".", "  ", " . "):
+            with pytest.raises(ValidationError):
+                ACPFileSecretSpec(
+                    secret_name="X", filename="x.json", env_var="X", subdir=bad
+                )
