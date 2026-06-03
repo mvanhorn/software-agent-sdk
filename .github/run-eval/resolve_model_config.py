@@ -365,6 +365,15 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    # https://static.stepfun.com/blog/step-3.7-flash/
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/openrouter/stepfun/step-3.7-flash",
+            "temperature": 0.0,
+        },
+    },
 }
 
 

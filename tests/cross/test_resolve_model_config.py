@@ -690,3 +690,16 @@ def test_minimax_m3_config():
     assert model["llm_config"]["model"] == "litellm_proxy/minimax/MiniMax-M3"
     assert model["llm_config"]["temperature"] == 1.0
     assert model["llm_config"]["top_p"] == 0.95
+
+
+def test_step_3_7_flash_config():
+    """Test that step-3.7-flash has correct configuration."""
+    model = MODELS["step-3.7-flash"]
+
+    assert model["id"] == "step-3.7-flash"
+    assert model["display_name"] == "Step 3.7 Flash"
+    assert (
+        model["llm_config"]["model"]
+        == "litellm_proxy/openrouter/stepfun/step-3.7-flash"
+    )
+    assert model["llm_config"]["temperature"] == 0.0
