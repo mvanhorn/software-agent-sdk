@@ -115,7 +115,8 @@ class _DataUrlCache:
         if encoded_size > self._max_bytes:
             # A single image larger than the cache budget: skip caching it.
             logger.debug(
-                "Image too large to cache (%d bytes > %d byte budget); will re-fetch. url=%s",
+                "Image too large to cache (%d bytes > %d byte budget); "
+                "will re-fetch. url=%s",
                 encoded_size,
                 self._max_bytes,
                 url,
@@ -265,6 +266,8 @@ def _fetch_and_encode(url: str, client: httpx.Client) -> str:
     return the resulting ``data:`` URL."""
     max_bytes = MAX_IMAGE_DOWNLOAD_MB * 1024 * 1024
     current_url = url
+    # +1: the initial fetch does not count against MAX_REDIRECTS, so this
+    # loop performs 1 original request + up to MAX_REDIRECTS redirect hops.
     for _ in range(MAX_REDIRECTS + 1):
         _validate_url_target(current_url)
         with client.stream("GET", current_url) as response:

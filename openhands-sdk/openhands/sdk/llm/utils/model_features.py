@@ -1,10 +1,11 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 
 from litellm import get_supported_openai_params
 
 
-def model_matches(model: str, patterns: list[str]) -> bool:
+def model_matches(model: str, patterns: Iterable[str]) -> bool:
     """Return True if any pattern appears as a substring in the raw model name.
 
     Matching semantics:
@@ -204,12 +205,12 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
 # model behind different upstreams that DO accept URLs (e.g.
 # bedrock/moonshotai.kimi-k2.5, fireworks_ai/.../kimi-k2.6), so we match on
 # the specific model id, not on the provider name.
-REQUIRES_INLINE_IMAGE_DATA_MODELS: list[str] = [
+REQUIRES_INLINE_IMAGE_DATA_MODELS: tuple[str, ...] = (
     # Moonshot public Kimi API: https://platform.kimi.ai/docs/guide/use-kimi-vision-model
     # > URL-formatted images: Not supported, currently only supports
     # > base64-encoded image content and images/videos uploaded via file ID
     "moonshot/kimi-k2.6",
-]
+)
 
 
 def get_features(model: str) -> ModelFeatures:

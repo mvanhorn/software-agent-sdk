@@ -528,6 +528,107 @@ def test_async_inline_uses_thread_offload():
     assert img.image_urls == [expected]
 
 
+def test_ssrf_blocks_redirect_to_private_ip(monkeypatch: pytest.MonkeyPatch):
+    """A 302 from a public URL to a private IP must be blocked on the redirect hop.
+
+    ``_validate_url_target`` is called inside the redirect-follow loop, so a
+    public origin that redirects to ``http://10.0.0.5/secret.png`` must be
+    refused without ever streaming the private body.
+    """
+    public_url = "https://example.com/redirect.png"
+    private_url = "http://10.0.0.5/secret.png"
+
+    # First call (public_url) resolves to a public IP; second call (private_url)
+    # resolves to a private IP, which ``_is_disallowed_ip`` rejects.
+    def _resolve(host: str, port: int) -> list[str]:
+        return ["10.0.0.5"] if host == "10.0.0.5" else ["8.8.8.8"]
+
+    monkeypatch.setattr(image_inline, "_resolve_host_ips", _resolve)
+
+    streamed_urls: list[str] = []
+
+    class _RedirectResp:
+        is_redirect = True
+
+        def __init__(self) -> None:
+            self.headers = {"Location": private_url}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_bytes(self, chunk_size: int = 65536):
+            yield b""
+
+    class _RedirectClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def close(self) -> None:
+            return None
+
+        def stream(self, method: str, request_url: str):
+            streamed_urls.append(request_url)
+            if request_url == private_url:
+                raise AssertionError(
+                    "SSRF check should have blocked the private redirect target "
+                    "before any HTTP request was issued."
+                )
+
+            class _Stream:
+                def __enter__(self) -> _RedirectResp:
+                    return _RedirectResp()
+
+                def __exit__(self, *exc: Any) -> None:
+                    return None
+
+            return _Stream()
+
+    msg = Message(role="user", content=[ImageContent(image_urls=[public_url])])
+    with patch.object(image_inline.httpx, "Client", _RedirectClient):
+        out = maybe_inline_image_urls([msg], inline_required=True, vision_enabled=True)
+
+    # Only the initial public URL was actually streamed; the private redirect
+    # target was rejected by the validator before reaching ``stream``.
+    assert streamed_urls == [public_url]
+    img = out[0].content[0]
+    assert isinstance(img, ImageContent)
+    # Fetch was refused mid-redirect → original URL preserved.
+    assert img.image_urls == [public_url]
+
+
+def test_sync_and_async_formatters_produce_identical_output():
+    """``aformat_messages_for_llm`` must match ``format_messages_for_llm``.
+
+    The async path duplicates ``_prepare_chat_messages`` (deepcopy + caching +
+    inline + resize) so it can ``await`` the inline pass. This test guards
+    against silent drift if a future preparation pass is added to one path
+    and not the other.
+    """
+    url = "https://example.com/x.png"
+    llm = LLM(
+        model="litellm_proxy/moonshot/kimi-k2.6",
+        api_key=SecretStr("test-key"),
+        usage_id="test",
+    )
+    message = Message(
+        role="user",
+        content=[TextContent(text="hi"), ImageContent(image_urls=[url])],
+    )
+
+    with (
+        patch.object(LLM, "vision_is_active", return_value=True),
+        _stub_get(url),
+    ):
+        sync_out = llm.format_messages_for_llm([message])
+    with (
+        patch.object(LLM, "vision_is_active", return_value=True),
+        _stub_get(url),
+    ):
+        async_out = asyncio.run(llm.aformat_messages_for_llm([message]))
+
+    assert sync_out == async_out
+
+
 def test_responses_formatter_inlines_image_urls():
     """``format_messages_for_responses`` rewrites image URLs to base64."""
     url = "https://example.com/x.png"
