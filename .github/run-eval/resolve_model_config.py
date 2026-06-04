@@ -392,6 +392,17 @@ MODELS = {
             "top_p": 0.95,
         },
     },
+    "step-3.7-flash": {
+        "id": "step-3.7-flash",
+        "display_name": "Step 3.7 Flash",
+        "llm_config": {
+            "model": "litellm_proxy/step-3.7-flash",
+            "temperature": 0.0,
+            "num_retries": 12,
+            "retry_min_wait": 30,
+            "retry_max_wait": 120,
+        },
+    },
 }
 
 
